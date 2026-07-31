@@ -23,4 +23,11 @@ export const TOOL_LABELS: Record<string, string> = {
   graph_overview: 'Surveying the graph',
   list_action_items: 'Checking action items',
   recent_notes: 'Reading recent notes',
+  list_open_questions: 'Gathering open questions',
+  list_decisions: 'Reviewing past decisions',
+  list_data_points: 'Pulling recorded figures',
+  list_spaces: 'Checking your spaces',
+  get_thread: 'Reading the thread in order',
+  notes_needing_review: 'Checking what needs sorting',
+  file_note: 'Filing the note',
 };

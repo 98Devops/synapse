@@ -50,9 +50,11 @@ interface Props {
   lens: Lens;
   onChange: (next: Lens) => void;
   matchCount: number;
+  /** Live counts per facet, so a filter that would hide everything says so. */
+  counts?: { sentiments: Record<string, number>; entityTypes: Record<string, number> };
 }
 
-export default function LensBar({ lens, onChange, matchCount }: Props) {
+export default function LensBar({ lens, onChange, matchCount, counts }: Props) {
   const toggle = (list: string[], value: string) =>
     list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 
@@ -98,12 +100,14 @@ export default function LensBar({ lens, onChange, matchCount }: Props) {
       <div className="flex items-center gap-1">
         {SENTIMENTS.map(([s, c]) => {
           const on = lens.sentiments.includes(s);
+          const n = counts?.sentiments[s] ?? 0;
           return (
             <button
               key={s}
               onClick={() => onChange({ ...lens, sentiments: toggle(lens.sentiments, s) })}
-              title={s}
-              className={`h-4 w-4 rounded-full border transition ${
+              title={`${s} — ${n} note${n === 1 ? '' : 's'}${n === 0 ? ' (nothing to show)' : ''}`}
+              disabled={n === 0}
+              className={`h-4 w-4 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-20 ${
                 on ? 'scale-110' : 'opacity-45 hover:opacity-80'
               }`}
               style={{ background: on ? c : 'transparent', borderColor: c }}
@@ -118,18 +122,22 @@ export default function LensBar({ lens, onChange, matchCount }: Props) {
       <div className="flex items-center gap-1">
         {ENTITY_TYPES.map(([t, c]) => {
           const on = lens.entityTypes.includes(t);
+          const n = counts?.entityTypes[t] ?? 0;
           return (
             <button
               key={t}
               onClick={() => onChange({ ...lens, entityTypes: toggle(lens.entityTypes, t) })}
-              className="mono rounded-md border px-1.5 py-0.5 text-[9px] uppercase tracking-wider transition"
+              disabled={n === 0}
+              title={`${t} — ${n} in your graph${n === 0 ? ' (nothing to show)' : ''}`}
+              className="mono rounded-md border px-1.5 py-0.5 text-[9px] uppercase tracking-wider transition disabled:cursor-not-allowed disabled:opacity-25"
               style={{
-                borderColor: on ? c : 'rgba(255,255,255,0.09)',
-                color: on ? c : '#8b93b8',
+                borderColor: on ? c : 'var(--line)',
+                color: on ? c : 'var(--muted)',
                 background: on ? `${c}1f` : 'transparent',
               }}
             >
               {t}
+              {n > 0 && <span className="ml-1 opacity-60">{n}</span>}
             </button>
           );
         })}
@@ -196,12 +204,17 @@ export default function LensBar({ lens, onChange, matchCount }: Props) {
       {active && (
         <>
           <Divider />
-          <span className="mono text-[10px] text-cyan">{matchCount} shown</span>
+          <span
+            className={`mono text-[10px] ${matchCount === 0 ? 'text-amber' : 'text-cyan'}`}
+            title="Nodes still visible under the current filters"
+          >
+            {matchCount === 0 ? 'nothing matches' : `${matchCount} shown`}
+          </span>
           <button
             onClick={() => onChange({ ...DEFAULT_LENS, layout: lens.layout })}
-            className="mono rounded-md px-1.5 py-0.5 text-[10px] text-muted transition hover:text-rose"
+            className="mono rounded-md border border-line px-1.5 py-0.5 text-[10px] text-muted transition hover:border-rose hover:text-rose"
           >
-            reset
+            clear filters
           </button>
         </>
       )}

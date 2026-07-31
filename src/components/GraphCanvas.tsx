@@ -68,6 +68,17 @@ interface Props {
   visibleIds: Set<string> | null;
   showClusters: boolean;
   isDark: boolean;
+  /** Lets the parent render zoom controls without owning the camera. */
+  onViewChange?: (zoom: number) => void;
+  controlsRef?: React.MutableRefObject<GraphControls | null>;
+}
+
+/** Imperative camera handle exposed to the toolbar. */
+export interface GraphControls {
+  zoomBy: (factor: number) => void;
+  fit: () => void;
+  reset: () => void;
+  focus: (id: string) => void;
 }
 
 export default function GraphCanvas({
@@ -80,6 +91,8 @@ export default function GraphCanvas({
   visibleIds,
   showClusters,
   isDark,
+  onViewChange,
+  controlsRef,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -441,6 +454,70 @@ export default function GraphCanvas({
 
       ctx.restore();
       ctx.globalAlpha = 1;
+
+      // ---- minimap (screen space, bottom-left) ----
+      // Only worth showing once you're zoomed in enough to lose the whole graph.
+      const positioned = nodes.filter((n) => n.x != null && n.y != null && n.born > 0.4);
+      if (positioned.length > 2 && width > 640) {
+        const MW = 128;
+        const MH = 88;
+        const MX = 16;
+        const MY = height - MH - 16;
+
+        const xs = positioned.map((n) => n.x!);
+        const ys = positioned.map((n) => n.y!);
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        const spanX = Math.max(1, maxX - minX);
+        const spanY = Math.max(1, maxY - minY);
+        const scale = Math.min((MW - 14) / spanX, (MH - 14) / spanY);
+        const toMap = (x: number, y: number): [number, number] => [
+          MX + MW / 2 + (x - (minX + maxX) / 2) * scale,
+          MY + MH / 2 + (y - (minY + maxY) / 2) * scale,
+        ];
+
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = dark ? 'rgba(11,13,18,0.72)' : 'rgba(255,255,255,0.82)';
+        ctx.strokeStyle = dark ? 'rgba(255,255,255,0.09)' : 'rgba(15,20,40,0.12)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(MX, MY, MW, MH, 8);
+        ctx.fill();
+        ctx.stroke();
+
+        for (const n of positioned) {
+          if (!isVisible(n.id)) continue;
+          const [mx, my] = toMap(n.x!, n.y!);
+          ctx.globalAlpha = n.kind === 'note' ? 0.85 : 0.5;
+          ctx.fillStyle = color(n);
+          ctx.beginPath();
+          ctx.arc(mx, my, n.kind === 'note' ? 1.7 : 1.1, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Viewport rectangle — the part of the graph currently on screen.
+        const halfW = width / 2 / view.k;
+        const halfH = height / 2 / view.k;
+        const cx = -view.x / view.k;
+        const cy = -view.y / view.k;
+        const [vx1, vy1] = toMap(cx - halfW, cy - halfH);
+        const [vx2, vy2] = toMap(cx + halfW, cy + halfH);
+
+        ctx.globalAlpha = 0.95;
+        ctx.strokeStyle = palette.neutral;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.rect(
+          Math.max(MX + 2, vx1),
+          Math.max(MY + 2, vy1),
+          Math.min(MW - 4, vx2 - vx1),
+          Math.min(MH - 4, vy2 - vy1)
+        );
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
     };
 
     raf = requestAnimationFrame(draw);
@@ -563,6 +640,79 @@ export default function GraphCanvas({
       canvas.removeEventListener('wheel', onWheel);
     };
   }, [pick, toWorld, onSelect]);
+
+  // ---- imperative camera controls -----------------------------------------
+  useEffect(() => {
+    if (!controlsRef) return;
+
+    /** Frames every visible node, so "fit" always recovers from being lost. */
+    const fit = () => {
+      const wrap = wrapRef.current;
+      const vis = visibleRef.current;
+      const pts = nodesRef.current.filter(
+        (n) => n.x != null && n.y != null && (!vis || vis.has(n.id))
+      );
+      if (!wrap || pts.length === 0) return;
+
+      const xs = pts.map((n) => n.x!);
+      const ys = pts.map((n) => n.y!);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+
+      const rect = wrap.getBoundingClientRect();
+      const PAD = 110; // room for labels and the side panels
+      const k = Math.max(
+        0.25,
+        Math.min(2.2, Math.min(
+          (rect.width - PAD * 2) / Math.max(1, maxX - minX),
+          (rect.height - PAD * 2) / Math.max(1, maxY - minY)
+        ))
+      );
+
+      const v = viewRef.current;
+      v.tk = k;
+      v.tx = -((minX + maxX) / 2) * k;
+      v.ty = -((minY + maxY) / 2) * k;
+    };
+
+    controlsRef.current = {
+      zoomBy: (factor) => {
+        const v = viewRef.current;
+        v.tk = Math.max(0.25, Math.min(4, v.tk * factor));
+      },
+      fit,
+      reset: () => {
+        const v = viewRef.current;
+        v.tk = 1;
+        v.tx = 0;
+        v.ty = 0;
+      },
+      focus: (id) => {
+        const n = nodesRef.current.find((x) => x.id === id);
+        if (!n || n.x == null) return;
+        const v = viewRef.current;
+        v.tk = Math.max(v.tk, 1.4);
+        v.tx = -n.x * v.tk;
+        v.ty = -n.y! * v.tk;
+      },
+    };
+  }, [controlsRef]);
+
+  // Report zoom upward so the toolbar can show it, throttled to real changes.
+  useEffect(() => {
+    if (!onViewChange) return;
+    let last = -1;
+    const id = setInterval(() => {
+      const k = Math.round(viewRef.current.k * 100) / 100;
+      if (k !== last) {
+        last = k;
+        onViewChange(k);
+      }
+    }, 120);
+    return () => clearInterval(id);
+  }, [onViewChange]);
 
   // Fly the camera to a node when it's selected from outside the canvas.
   useEffect(() => {

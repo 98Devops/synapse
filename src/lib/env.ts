@@ -12,6 +12,11 @@ function required(name: string): string {
   return value;
 }
 
+/** Optional vars degrade gracefully instead of throwing. */
+export function optional(name: string): string | null {
+  return process.env[name]?.trim() || null;
+}
+
 export function getEnv() {
   const rawQdrant = required('QDRANT_URL');
   // Qdrant Cloud shows the endpoint without a port; the REST API lives on 6333.

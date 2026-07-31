@@ -2,11 +2,12 @@
 
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import InboxPanel from '@/components/InboxPanel';
 import type { Cluster } from '@/lib/cluster';
 import type { Insight } from '@/lib/insights';
-import type { Note } from '@/lib/types';
+import type { Note, Space } from '@/lib/types';
 
-type Tab = 'pulse' | 'actions' | 'themes';
+type Tab = 'inbox' | 'pulse' | 'actions' | 'spaces';
 
 const SENTIMENT_COLOR: Record<string, string> = {
   positive: '#34d399',
@@ -19,19 +20,25 @@ interface Props {
   insight: Insight;
   clusters: Cluster[];
   notes: Note[];
+  spaces: Space[];
   onSelect: (id: string) => void;
   onToggleAction: (noteId: string, item: string, done: boolean) => void;
   onFocusCluster: (c: Cluster) => void;
+  onFiled: () => void;
 }
 
 export default function PulsePanel({
   insight,
   clusters,
+  notes,
+  spaces,
   onSelect,
   onToggleAction,
   onFocusCluster,
+  onFiled,
 }: Props) {
-  const [tab, setTab] = useState<Tab>('pulse');
+  const inbox = notes.filter((n) => n.status === 'needs_review');
+  const [tab, setTab] = useState<Tab>(inbox.length > 0 ? 'inbox' : 'pulse');
   const peak = Math.max(1, ...insight.activity);
   const totalSentiment = Object.values(insight.sentimentMix).reduce((a, b) => a + b, 0) || 1;
 
@@ -40,9 +47,10 @@ export default function PulsePanel({
       <div className="flex shrink-0 gap-1 border-b border-line/60 p-2">
         {(
           [
+            ['inbox', `Inbox${inbox.length ? ` · ${inbox.length}` : ''}`],
             ['pulse', 'Pulse'],
             ['actions', `Actions${insight.openActions.length ? ` · ${insight.openActions.length}` : ''}`],
-            ['themes', 'Themes'],
+            ['spaces', 'Spaces'],
           ] as Array<[Tab, string]>
         ).map(([key, label]) => (
           <button
@@ -66,6 +74,17 @@ export default function PulsePanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <AnimatePresence mode="wait">
+          {tab === 'inbox' && (
+            <motion.div
+              key="inbox"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+            >
+              <InboxPanel notes={inbox} spaces={spaces} onSelect={onSelect} onFiled={onFiled} />
+            </motion.div>
+          )}
+
           {tab === 'pulse' && (
             <motion.div
               key="pulse"
@@ -208,14 +227,36 @@ export default function PulsePanel({
             </motion.div>
           )}
 
-          {tab === 'themes' && (
+          {tab === 'spaces' && (
             <motion.div
-              key="themes"
+              key="spaces"
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
               className="space-y-2"
             >
+              {spaces.length > 0 && (
+                <div className="mb-4">
+                  <Label>Spaces</Label>
+                  <div className="space-y-1">
+                    {spaces.map((s) => (
+                      <div
+                        key={s.id}
+                        className="flex items-center gap-2 rounded-lg border border-line px-2.5 py-1.5"
+                      >
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ background: s.color }}
+                        />
+                        <span className="flex-1 truncate text-[12px] text-ink/85">{s.name}</span>
+                        <span className="mono text-[10px] text-muted">{s.noteCount}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <Label>Auto-detected themes</Label>
               {clusters.length === 0 && (
                 <Empty>Themes appear once your notes start clustering. Add a few more.</Empty>
               )}

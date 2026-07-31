@@ -1,28 +1,23 @@
 import { NextResponse } from 'next/server';
-import { scrollNotes, setPayload } from '@/lib/qdrant';
+import { setActionDone } from '@/lib/db/notes';
+import { requireUser } from '@/lib/supabase/server';
+import { fail } from '@/lib/api';
 
 export const dynamic = 'force-dynamic';
 
-/** Toggles a single action item complete/incomplete on a note. */
+/** Toggles a single action item complete/incomplete. */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const user = await requireUser();
     const { id } = await ctx.params;
     const { item, done } = await req.json();
     if (typeof item !== 'string') {
       return NextResponse.json({ error: 'item (string) is required' }, { status: 400 });
     }
 
-    const points = await scrollNotes(false);
-    const note = points.find((p) => p.id === id);
-    if (!note) return NextResponse.json({ error: 'Note not found' }, { status: 404 });
-
-    const current = new Set(note.payload.completedActions ?? []);
-    if (done) current.add(item);
-    else current.delete(item);
-
-    await setPayload(id, { completedActions: [...current] });
-    return NextResponse.json({ ok: true, completedActions: [...current] });
+    await setActionDone(user.id, id, item, Boolean(done));
+    return NextResponse.json({ ok: true });
   } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+    return fail(err);
   }
 }

@@ -27,6 +27,15 @@ export function useSpeaker() {
   const [mode, setMode] = useState<VoiceMode>('instant');
   const [speaking, setSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [engine, setEngine] = useState<'elevenlabs' | 'gemini'>('gemini');
+
+  // Which engine is actually configured server-side drives the UI label.
+  useEffect(() => {
+    fetch('/api/voices')
+      .then((r) => r.json())
+      .then((d) => d.engine && setEngine(d.engine))
+      .catch(() => {});
+  }, []);
 
   const spokenUpTo = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -112,6 +121,9 @@ export function useSpeaker() {
       try {
         setSpeaking(true);
         setError(null);
+        // The response streams from ElevenLabs; we buffer it because MediaSource
+        // MP3 append is unreliable across browsers and flash-v2.5 is fast enough
+        // that the whole clip usually arrives in under a second anyway.
         const res = await fetch('/api/speak', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -148,5 +160,5 @@ export function useSpeaker() {
 
   useEffect(() => () => stop(), [stop]);
 
-  return { mode, setMode: persist, speaking, error, feed, flush, reset, stop };
+  return { mode, setMode: persist, speaking, error, engine, feed, flush, reset, stop };
 }

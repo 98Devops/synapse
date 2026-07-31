@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { TOOL_LABELS, type AgentEvent } from '@/lib/protocol';
 import { useSpeaker, type VoiceMode } from '@/lib/useSpeaker';
-import { useSpeech } from '@/lib/useSpeech';
+import { useRecorder } from '@/lib/useRecorder';
 import type { Citation } from '@/lib/types';
 
 interface Step {
@@ -20,11 +20,12 @@ const SUGGESTIONS = [
 ];
 
 const VOICE_CYCLE: VoiceMode[] = ['instant', 'natural', 'off'];
-const VOICE_LABEL: Record<VoiceMode, string> = {
-  instant: 'Instant voice',
-  natural: 'Natural voice',
-  off: 'Voice off',
-};
+const voiceLabel = (mode: VoiceMode, engine: string) =>
+  mode === 'off'
+    ? 'Voice off'
+    : mode === 'instant'
+      ? 'Instant voice (browser, zero latency)'
+      : `Natural voice (${engine === 'elevenlabs' ? 'ElevenLabs' : 'Gemini'})`;
 
 interface Props {
   onCitations: (ids: string[]) => void;
@@ -137,11 +138,26 @@ export default function AgentPanel({ onCitations, onSelect, noteCount }: Props) 
     [onCitations]
   );
 
-  // Voice input for the agent (separate from note capture).
-  const voice = useSpeech((text) => {
-    setQuery(text);
-    ask(text);
+  // Voice input for the agent. Recorded here, transcribed server-side, so it
+  // works in Brave/Firefox/Safari exactly like it does in Chrome.
+  const [transcribing, setTranscribing] = useState(false);
+  const voice = useRecorder(async (audio) => {
+    setTranscribing(true);
+    try {
+      const form = new FormData();
+      form.append('audio', audio, 'question.webm');
+      const res = await fetch('/api/transcribe', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not transcribe');
+      setQuery(data.text);
+      await ask(data.text);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setTranscribing(false);
+    }
   });
+
   const listenRef = useRef<(() => void) | null>(null);
   listenRef.current = () => {
     if (!voice.recording) voice.start();
@@ -173,11 +189,11 @@ export default function AgentPanel({ onCitations, onSelect, noteCount }: Props) 
           )}
           <button
             onClick={cycleVoice}
-            title={VOICE_LABEL[speaker.mode]}
+            title={voiceLabel(speaker.mode, speaker.engine)}
             className={`rounded-md p-1.5 transition hover:bg-accent-soft ${
               speaker.mode === 'off' ? 'text-faint' : speaker.mode === 'natural' ? 'text-cyan' : 'text-accent'
             }`}
-            aria-label={VOICE_LABEL[speaker.mode]}
+            aria-label={voiceLabel(speaker.mode, speaker.engine)}
           >
             {speaker.mode === 'off' ? (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -220,7 +236,9 @@ export default function AgentPanel({ onCitations, onSelect, noteCount }: Props) 
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !busy && ask(query)}
-            placeholder={voice.recording ? 'Listening…' : 'Ask your brain anything…'}
+            placeholder={
+              voice.recording ? 'Recording…' : transcribing ? 'Transcribing…' : 'Ask your brain anything…'
+            }
             className="focus-ring w-full rounded-xl border border-line bg-bg/60 py-2.5 pl-3 pr-10 text-[13px] outline-none transition placeholder:text-faint"
           />
           <button
@@ -236,19 +254,23 @@ export default function AgentPanel({ onCitations, onSelect, noteCount }: Props) 
         </div>
 
         {/* live states */}
-        {(voice.recording || converse) && (
+        {(voice.recording || converse || transcribing) && (
           <div className="mono mt-2 flex items-center gap-2 text-[10px] text-rose">
             <span className="relative flex h-2 w-2">
               <span className="pulse-ring absolute inset-0" />
               <span className="h-2 w-2 rounded-full bg-rose" />
             </span>
-            {voice.recording ? (voice.interim || 'listening…') : 'conversation mode — waiting'}
+            {voice.recording
+              ? `recording ${voice.seconds}s — click the mic to send`
+              : transcribing
+                ? 'transcribing…'
+                : 'conversation mode — waiting'}
           </div>
         )}
         {voice.error && <div className="mono mt-2 text-[10px] text-rose">{voice.error}</div>}
         {speaker.error && <div className="mono mt-2 text-[10px] text-amber">{speaker.error}</div>}
 
-        {!answer && !busy && steps.length === 0 && !voice.recording && (
+        {!answer && !busy && steps.length === 0 && !voice.recording && !transcribing && (
           <div className="mt-2.5 flex flex-wrap gap-1.5">
             {SUGGESTIONS.map((s) => (
               <button

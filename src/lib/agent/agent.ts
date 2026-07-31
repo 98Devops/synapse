@@ -36,10 +36,12 @@ function model(name: string) {
  * Free-tier Gemini quota is per-model and low, so the agent retries transient
  * failures and then falls back across models rather than dying mid-answer.
  */
-export function createSynapseAgent(trace: ToolTrace) {
+export function createSynapseAgent(trace: ToolTrace, userId: string) {
   return createAgent({
-    model: model('gemini-3.6-flash'),
-    tools: buildTools(trace),
+    // flash-lite keeps each tool-calling round trip near 1.5s instead of ~5s;
+    // an agent turn is 3+ model calls, so this is the single biggest latency win.
+    model: model('gemini-3.1-flash-lite'),
+    tools: buildTools(trace, userId),
     systemPrompt: AGENT_SYSTEM,
     middleware: [
       modelRetryMiddleware({
@@ -47,7 +49,7 @@ export function createSynapseAgent(trace: ToolTrace) {
         initialDelayMs: 1000,
         backoffFactor: 3,
       }),
-      modelFallbackMiddleware(model('gemini-3.1-flash-lite'), model('gemini-2.0-flash')),
+      modelFallbackMiddleware(model('gemini-3.6-flash'), model('gemini-2.0-flash')),
     ],
   });
 }

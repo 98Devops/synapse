@@ -4,12 +4,17 @@ import type { Extraction } from './types';
 const API = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 export const EMBED_MODEL = 'gemini-embedding-001';
-export const CHAT_MODEL = 'gemini-3.6-flash';
+/**
+ * flash-lite is ~4x faster than 3.6-flash (1.4s vs 6s measured) and produced
+ * identical entity extraction on our test notes. Latency matters more than
+ * headroom here, so it leads and the bigger model is the fallback.
+ */
+export const CHAT_MODEL = 'gemini-3.1-flash-lite';
 /**
  * Free-tier quota is per-model and low (~5 rpm). When the primary is rate
  * limited we fall down this chain rather than failing the user's capture.
  */
-const CHAT_FALLBACKS = ['gemini-3.1-flash-lite', 'gemini-2.0-flash', 'gemini-flash-lite-latest'];
+const CHAT_FALLBACKS = ['gemini-3.6-flash', 'gemini-2.0-flash', 'gemini-flash-lite-latest'];
 /** Truncated from the model's native 3072. Must match the Qdrant collection size. */
 export const VECTOR_SIZE = 768;
 
@@ -77,6 +82,28 @@ export async function embed(
   return data.embedding.values as number[];
 }
 
+/**
+ * One request for many texts. Indexing a note plus its facets is 3-6 embeddings;
+ * doing them serially would undo the capture-latency work.
+ */
+export async function embedBatch(
+  texts: string[],
+  taskType: 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY' = 'RETRIEVAL_DOCUMENT'
+): Promise<number[][]> {
+  if (texts.length === 0) return [];
+
+  const data = await geminiFetch(`${EMBED_MODEL}:batchEmbedContents`, {
+    requests: texts.map((text) => ({
+      model: `models/${EMBED_MODEL}`,
+      content: { parts: [{ text }] },
+      taskType,
+      outputDimensionality: VECTOR_SIZE,
+    })),
+  });
+
+  return (data.embeddings ?? []).map((e: { values: number[] }) => e.values);
+}
+
 /** Generic structured-output helper for anything that isn't note extraction. */
 export async function generateJson(prompt: string, schema: unknown): Promise<any> {
   const data = await generate({
@@ -99,7 +126,29 @@ const EXTRACTION_SCHEMA = {
     summary: { type: 'STRING', description: 'One or two sentences, third person.' },
     sentiment: { type: 'STRING', enum: ['positive', 'neutral', 'negative', 'urgent'] },
     tags: { type: 'ARRAY', items: { type: 'STRING' }, description: '2-5 broad topic tags.' },
-    actionItems: { type: 'ARRAY', items: { type: 'STRING' } },
+
+    intent: {
+      type: 'STRING',
+      enum: [
+        'task', 'decision', 'idea', 'question', 'observation',
+        'reflection', 'reference', 'log', 'unclassified',
+      ],
+      description: 'The single dominant thing the speaker was doing.',
+    },
+    intentConfidence: {
+      type: 'NUMBER',
+      description: '0..1. Be honest — below 0.6 sends the note for human review.',
+    },
+    unclassifiedReason: {
+      type: 'STRING',
+      description: 'Only when intent is unclassified or confidence is low. One short phrase.',
+    },
+    suggestedSpace: {
+      type: 'STRING',
+      description:
+        'The durable area of life/work this belongs to, e.g. "Project Atlas" or "Interview prep". Empty if unclear.',
+    },
+
     entities: {
       type: 'ARRAY',
       description: 'Concrete named things worth linking notes by.',
@@ -112,32 +161,127 @@ const EXTRACTION_SCHEMA = {
         required: ['name', 'type'],
       },
     },
+    actions: {
+      type: 'ARRAY',
+      description: 'Only genuine commitments the speaker made.',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          text: { type: 'STRING' },
+          owner: { type: 'STRING', description: 'Who owes it, if stated. Empty means the speaker.' },
+          dueDate: { type: 'STRING', description: 'ISO date if a date is stated or clearly implied.' },
+          priority: { type: 'STRING', enum: ['low', 'normal', 'high'] },
+        },
+        required: ['text'],
+      },
+    },
+    dataPoints: {
+      type: 'ARRAY',
+      description: 'Hard facts worth keeping: numbers, dates, metrics, identifiers.',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          label: { type: 'STRING' },
+          value: { type: 'STRING' },
+          unit: { type: 'STRING' },
+          kind: { type: 'STRING', enum: ['metric', 'date', 'money', 'identifier', 'fact'] },
+        },
+        required: ['label', 'value', 'kind'],
+      },
+    },
+    questions: {
+      type: 'ARRAY',
+      description: 'Things raised but left unresolved.',
+      items: { type: 'STRING' },
+    },
+    decisions: {
+      type: 'ARRAY',
+      description: 'Choices the speaker settled on.',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          text: { type: 'STRING' },
+          alternatives: { type: 'ARRAY', items: { type: 'STRING' } },
+        },
+        required: ['text'],
+      },
+    },
   },
-  required: ['title', 'summary', 'sentiment', 'tags', 'actionItems', 'entities'],
+  required: [
+    'title', 'summary', 'sentiment', 'tags', 'intent', 'intentConfidence',
+    'entities', 'actions', 'dataPoints', 'questions', 'decisions',
+  ],
 };
 
 const EXTRACT_PROMPT = `You are the indexing engine of a personal knowledge graph.
-Extract structure from the raw voice note below.
+Classify and extract structure from the raw voice note below.
 
-Rules:
-- Entities are the graph's connective tissue. Extract the specific named things
-  (people, projects, organisations, tools, places, concepts) that would plausibly
-  recur across other notes. Normalise them: "Sarah" not "sarah at acme", "Qdrant"
-  not "the qdrant db".
-- Do NOT invent entities that are not clearly present.
-- Prefer 3-8 entities. Fewer is fine for a short note.
-- Action items only if the speaker committed to something.
-- The note is a raw speech transcript: it may lack punctuation and contain
-  transcription errors. Interpret generously.
+INTENT — pick the single dominant one:
+- task: committing to do something
+- decision: recording a choice already made
+- idea: proposing something new, exploratory
+- question: raising something unresolved
+- observation: noting a fact about the world
+- reflection: processing their own state or feelings
+- reference: capturing external material (a link, quote, figure)
+- log: routine record of what happened
+- unclassified: too short, pure filler, or genuinely ambiguous
 
+Set intentConfidence honestly. Use below 0.6 when the note is thin, rambling, or
+carries two intents with no dominant one — that routes it to human review, which is
+far better than filing it wrongly. For filler like "testing testing" or "hmm okay",
+use intent=unclassified with a short unclassifiedReason.
+
+FACETS — a note can carry several, independent of its intent. A "log" note can
+still contain an action and a data point; extract them all.
+- actions: only genuine commitments, not vague intentions
+- dataPoints: concrete numbers, dates, money, identifiers, hard facts
+- questions: only things left genuinely open
+- decisions: only settled choices
+
+ENTITIES are the graph's connective tissue. Extract the specific named things that
+would plausibly recur in other notes. Normalise them: "Sarah" not "sarah from
+acme", "Qdrant" not "the qdrant db". Never invent one that isn't clearly present.
+Prefer 3-8; fewer is fine for a short note.
+
+The note is a raw speech transcript: it may lack punctuation and contain
+transcription errors. Interpret generously, but never fabricate.
+
+Today is {{TODAY}}. Resolve relative dates ("Thursday", "next week") against it,
+and never emit a date in a different year unless the speaker said so.
+{{LEARNED}}
 Raw note:
 """
 {{TEXT}}
 """`;
 
-export async function extract(text: string): Promise<Extraction> {
+/**
+ * Past user corrections become few-shot examples, so the extractor adapts to how
+ * this particular person talks. See docs/CLASSIFICATION.md ("Self-learning").
+ */
+export interface LearnedExample {
+  excerpt: string;
+  field: string;
+  to: string;
+}
+
+function learnedBlock(examples: LearnedExample[]): string {
+  if (!examples.length) return '\n';
+  const lines = examples
+    .slice(0, 8)
+    .map((e) => `- "${e.excerpt.slice(0, 90)}" → ${e.field}: ${e.to}`)
+    .join('\n');
+  return `\nThis user has previously corrected your classifications. Follow these:\n${lines}\n`;
+}
+
+export async function extract(text: string, learned: LearnedExample[] = []): Promise<Extraction> {
+  const today = new Date().toISOString().slice(0, 10);
+  const prompt = EXTRACT_PROMPT.replace('{{TEXT}}', text)
+    .replace('{{TODAY}}', `${today} (${new Date().toLocaleDateString('en-US', { weekday: 'long' })})`)
+    .replace('{{LEARNED}}', learnedBlock(learned));
+
   const data = await generate({
-    contents: [{ role: 'user', parts: [{ text: EXTRACT_PROMPT.replace('{{TEXT}}', text) }] }],
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema: EXTRACTION_SCHEMA,
@@ -148,19 +292,46 @@ export async function extract(text: string): Promise<Extraction> {
   const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!raw) throw new Error('Gemini returned no extraction content');
 
-  const parsed = JSON.parse(raw) as Extraction;
+  const p = JSON.parse(raw) as Partial<Extraction>;
 
-  // Defensive: the model is schema-constrained, but never trust it fully.
+  // The model is schema-constrained, but never trust it fully.
+  const confidence = Math.max(0, Math.min(1, Number(p.intentConfidence ?? 0)));
+
   return {
-    title: parsed.title?.trim() || text.slice(0, 40),
-    summary: parsed.summary?.trim() || '',
-    sentiment: parsed.sentiment || 'neutral',
-    tags: (parsed.tags || []).filter(Boolean).slice(0, 8),
-    actionItems: (parsed.actionItems || []).filter(Boolean),
-    entities: (parsed.entities || [])
+    title: p.title?.trim() || text.slice(0, 40),
+    summary: p.summary?.trim() || '',
+    sentiment: p.sentiment || 'neutral',
+    tags: (p.tags || []).filter(Boolean).slice(0, 8),
+
+    intent: p.intent || 'unclassified',
+    intentConfidence: confidence,
+    unclassifiedReason: p.unclassifiedReason?.trim() || undefined,
+    suggestedSpace: p.suggestedSpace?.trim() || undefined,
+
+    entities: (p.entities || [])
       .filter((e) => e?.name?.trim())
       .map((e) => ({ name: e.name.trim(), type: e.type }))
       .slice(0, 12),
+    actions: (p.actions || [])
+      .filter((a) => a?.text?.trim())
+      .map((a) => ({
+        text: a.text.trim(),
+        owner: a.owner?.trim() || undefined,
+        dueDate: /^\d{4}-\d{2}-\d{2}$/.test(a.dueDate ?? '') ? a.dueDate : undefined,
+        priority: a.priority ?? 'normal',
+      })),
+    dataPoints: (p.dataPoints || [])
+      .filter((d) => d?.label?.trim() && d?.value?.trim())
+      .map((d) => ({
+        label: d.label.trim(),
+        value: d.value.trim(),
+        unit: d.unit?.trim() || undefined,
+        kind: d.kind ?? 'fact',
+      })),
+    questions: (p.questions || []).filter((q) => q?.trim()).map((q) => q.trim()),
+    decisions: (p.decisions || [])
+      .filter((d) => d?.text?.trim())
+      .map((d) => ({ text: d.text.trim(), alternatives: (d.alternatives || []).filter(Boolean) })),
   };
 }
 

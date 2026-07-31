@@ -1,13 +1,15 @@
 import { buildGraph } from '@/lib/graph';
 import { scrollNotes } from '@/lib/qdrant';
+import { requireUser } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 
 /** GET /api/export?format=json|md — the whole brain, portable. */
 export async function GET(req: Request) {
   try {
+    const user = await requireUser();
     const format = new URL(req.url).searchParams.get('format') ?? 'json';
-    const points = await scrollNotes(true);
+    const points = await scrollNotes(user.id, true);
     const notes = points
       .map((p) => ({ id: p.id, ...p.payload }))
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));

@@ -54,9 +54,13 @@ create table if not exists public.entities (
   user_id uuid not null references auth.users(id) on delete cascade,
   name    text not null,
   type    text not null
-          check (type in ('person','project','org','concept','place','tool')),
-  unique (user_id, lower(name), type)
+          check (type in ('person','project','org','concept','place','tool'))
 );
+
+-- Case-insensitive uniqueness has to be a unique INDEX, not a table
+-- constraint — Postgres does not allow expressions inside UNIQUE (...).
+create unique index if not exists entities_user_name_type_idx
+  on public.entities (user_id, lower(name), type);
 
 create index if not exists entities_user_idx on public.entities (user_id);
 

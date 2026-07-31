@@ -3,12 +3,14 @@ import { CLUSTER_COLORS, detectCommunities, type Cluster } from '@/lib/cluster';
 import { buildGraph } from '@/lib/graph';
 import { generateJson } from '@/lib/gemini';
 import { scrollNotes } from '@/lib/qdrant';
+import { requireUser } from '@/lib/supabase/server';
+import { fail } from '@/lib/api';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-/** Naming costs a Gemini call, so cache until the note set actually changes. */
-let cache: { key: string; clusters: Cluster[] } | null = null;
+/** Naming costs a Gemini call, so cache per user until their notes change. */
+const cache = new Map<string, { key: string; clusters: Cluster[] }>();
 
 const NAME_SCHEMA = {
   type: 'OBJECT',
@@ -30,14 +32,16 @@ const NAME_SCHEMA = {
 
 export async function GET() {
   try {
-    const points = await scrollNotes(true);
+    const user = await requireUser();
+    const points = await scrollNotes(user.id, true);
     const graph = buildGraph(points);
 
     const key = points
       .map((p) => p.id)
       .sort()
       .join(',');
-    if (cache?.key === key) return NextResponse.json({ clusters: cache.clusters });
+    const hit = cache.get(user.id);
+    if (hit?.key === key) return NextResponse.json({ clusters: hit.clusters });
 
     const membership = detectCommunities(graph);
     const byCluster = new Map<number, string[]>();
@@ -47,7 +51,7 @@ export async function GET() {
     }
 
     if (byCluster.size === 0) {
-      cache = { key, clusters: [] };
+      cache.set(user.id, { key, clusters: [] });
       return NextResponse.json({ clusters: [] });
     }
 
@@ -89,9 +93,9 @@ ${draft.map((d, i) => `Group ${i}:\n${d.labels.slice(0, 18).join(', ')}`).join('
       color: CLUSTER_COLORS[i % CLUSTER_COLORS.length],
     }));
 
-    cache = { key, clusters };
+    cache.set(user.id, { key, clusters });
     return NextResponse.json({ clusters });
   } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+    return fail(err);
   }
 }

@@ -1,6 +1,98 @@
-import { getEnv } from './env';
+import { getEnv, optional } from './env';
 
 const API = 'https://generativelanguage.googleapis.com/v1beta/models';
+const ELEVEN_API = 'https://api.elevenlabs.io/v1';
+
+/**
+ * Flash v2.5 is ElevenLabs' low-latency model (~75ms to first byte) and is the
+ * reason this path feels conversational where Gemini TTS does not.
+ */
+const ELEVEN_MODEL = 'eleven_flash_v2_5';
+
+export function hasElevenLabs() {
+  return Boolean(optional('ELEVENLABS_API_KEY'));
+}
+
+/**
+ * Free accounts get a 402 for Voice Library voices, so we never hardcode an id.
+ * Instead we resolve one from the account's own premade voices and cache it.
+ * Preference order is just "which reads best as an assistant".
+ */
+const PREFERRED = ['River', 'Sarah', 'Alice', 'Matilda', 'George'];
+const USABLE_CATEGORIES = new Set(['premade', 'professional', 'cloned', 'generated']);
+
+let cachedVoiceId: string | null = null;
+
+interface ElevenVoice {
+  voice_id: string;
+  name: string;
+  category?: string;
+  labels?: Record<string, string>;
+}
+
+async function listVoices(key: string): Promise<ElevenVoice[]> {
+  const res = await fetch(`${ELEVEN_API}/voices`, { headers: { 'xi-api-key': key } });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.voices ?? []).filter((v: ElevenVoice) => USABLE_CATEGORIES.has(v.category ?? ''));
+}
+
+async function defaultVoiceId(key: string): Promise<string> {
+  if (cachedVoiceId) return cachedVoiceId;
+  const voices = await listVoices(key);
+  if (!voices.length) throw new Error('No usable ElevenLabs voices on this account');
+
+  const preferred = PREFERRED.map((n) =>
+    voices.find((v) => v.name.toLowerCase().startsWith(n.toLowerCase()))
+  ).find(Boolean);
+
+  cachedVoiceId = (preferred ?? voices[0]).voice_id;
+  return cachedVoiceId;
+}
+
+/** Streams MP3 straight from ElevenLabs — no buffering on our side. */
+export async function elevenLabsStream(
+  text: string,
+  voiceId?: string
+): Promise<ReadableStream<Uint8Array>> {
+  const key = optional('ELEVENLABS_API_KEY');
+  if (!key) throw new Error('ELEVENLABS_API_KEY is not set');
+
+  const id = voiceId || (await defaultVoiceId(key));
+
+  const res = await fetch(
+    `${ELEVEN_API}/text-to-speech/${id}/stream?output_format=mp3_44100_128`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'xi-api-key': key },
+      body: JSON.stringify({
+        text,
+        model_id: ELEVEN_MODEL,
+        voice_settings: { stability: 0.4, similarity_boost: 0.75, speed: 1.05 },
+      }),
+    }
+  );
+
+  if (!res.ok || !res.body) {
+    throw new Error(`ElevenLabs failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  }
+  return res.body;
+}
+
+/** Only voices this account can actually synthesise with — no 402 surprises. */
+export async function elevenLabsVoices() {
+  const key = optional('ELEVENLABS_API_KEY');
+  if (!key) return [];
+  const voices = await listVoices(key);
+  return voices.map((v) => ({
+    // Names arrive as "Roger - Laid-Back, Casual" — split the descriptor out.
+    id: v.voice_id,
+    label: v.name.split(' - ')[0].trim(),
+    description: v.name.includes(' - ')
+      ? v.name.split(' - ').slice(1).join(' - ').trim()
+      : [v.labels?.accent, v.labels?.description].filter(Boolean).join(', '),
+  }));
+}
 
 /** Primary is the faster of the two; the preview model is the fallback. */
 const TTS_MODELS = ['gemini-2.5-flash-preview-tts', 'gemini-3.1-flash-tts-preview'];

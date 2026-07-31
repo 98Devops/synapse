@@ -1,10 +1,31 @@
 import { NextResponse } from 'next/server';
-import { synthesise } from '@/lib/tts';
+import { elevenLabsStream, hasElevenLabs, synthesise } from '@/lib/tts';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-/** POST { text, voice? } -> audio/wav */
+/** Strips citation markers and markdown so nothing is read out literally. */
+function clean(text: string) {
+  let out = text
+    .replace(/\s*\[id=[^\]]+\]/g, '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/[*#`_>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (out.length > 2500) {
+    const cut = out.slice(0, 2500);
+    const end = Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?'));
+    out = end > 0 ? cut.slice(0, end + 1) : cut;
+  }
+  return out;
+}
+
+/**
+ * POST { text, voice? } -> audio
+ * ElevenLabs when a key is configured (streamed MP3, ~0.5s to audio),
+ * otherwise Gemini TTS (buffered WAV, ~6s).
+ */
 export async function POST(req: Request) {
   try {
     const { text, voice } = await req.json();
@@ -12,19 +33,32 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'text (string) is required' }, { status: 400 });
     }
 
-    // Keep requests bounded — long answers get truncated at a sentence edge.
-    let clean = text.replace(/\s*\[id=[^\]]+\]/g, '').replace(/[*#`_]/g, '').trim();
-    if (clean.length > 1800) {
-      const cut = clean.slice(0, 1800);
-      clean = cut.slice(0, Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?')) + 1) || cut;
+    const spoken = clean(text);
+    if (!spoken) return NextResponse.json({ error: 'nothing to speak' }, { status: 400 });
+
+    if (hasElevenLabs()) {
+      try {
+        const stream = await elevenLabsStream(spoken, typeof voice === 'string' && voice ? voice : undefined);
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'audio/mpeg',
+            'Cache-Control': 'no-store',
+            'X-Voice-Engine': 'elevenlabs',
+          },
+        });
+      } catch (err) {
+        // Fall through to Gemini rather than leaving the user in silence.
+        console.error('[speak] ElevenLabs failed, falling back:', (err as Error).message);
+      }
     }
 
-    const wav = await synthesise(clean, typeof voice === 'string' ? voice : 'Kore');
+    const wav = await synthesise(spoken, typeof voice === 'string' && voice.length < 20 ? voice : 'Kore');
     return new Response(new Uint8Array(wav), {
       headers: {
         'Content-Type': 'audio/wav',
         'Content-Length': String(wav.length),
         'Cache-Control': 'no-store',
+        'X-Voice-Engine': 'gemini',
       },
     });
   } catch (err) {

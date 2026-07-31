@@ -21,8 +21,8 @@ async function qdrant(path: string, init: RequestInit = {}) {
 let ensured = false;
 
 /**
- * Creates the collection on first use. Also indexes the fields we filter on —
- * without a payload index Qdrant rejects filtered scrolls on large collections.
+ * Creates the collection on first use, plus a payload index on userId — every
+ * query filters by it, and Qdrant needs the index for that to stay fast.
  */
 export async function ensureCollection() {
   if (ensured) return;
@@ -31,23 +31,81 @@ export async function ensureCollection() {
   if (check.status !== 200) {
     const create = await qdrant(`/collections/${COLLECTION}`, {
       method: 'PUT',
-      body: JSON.stringify({
-        vectors: { size: VECTOR_SIZE, distance: 'Cosine' },
-      }),
+      body: JSON.stringify({ vectors: { size: VECTOR_SIZE, distance: 'Cosine' } }),
     });
     if (!create.ok && create.status !== 409) {
       throw new Error(`Qdrant collection create failed: ${await create.text()}`);
     }
   }
+
+  // Payload indexes let Qdrant narrow the candidate set *before* the ANN search,
+  // which is what makes "decisions about Atlas since June" fast rather than a
+  // full scan followed by filtering. Idempotent — conflicts are ignored.
+  for (const field of ['userId', 'kind', 'intent', 'spaceId', 'parentId']) {
+    await qdrant(`/collections/${COLLECTION}/index?wait=true`, {
+      method: 'PUT',
+      body: JSON.stringify({ field_name: field, field_schema: 'keyword' }),
+    }).catch(() => {});
+  }
+
   ensured = true;
 }
 
-export async function upsertNote(note: Note, vector: number[]) {
+/** Anything indexed: a whole note, or one facet pointing back at its note. */
+export type PointKind = 'note' | 'action' | 'decision' | 'question' | 'datapoint';
+
+export interface IndexPoint {
+  id: string;
+  vector: number[];
+  payload: Record<string, unknown> & { kind: PointKind; parentId: string };
+}
+
+export async function upsertPoints(points: IndexPoint[], userId: string) {
+  if (points.length === 0) return;
   await ensureCollection();
-  const { id, ...payload } = note;
   const res = await qdrant(`/collections/${COLLECTION}/points?wait=true`, {
     method: 'PUT',
-    body: JSON.stringify({ points: [{ id, vector, payload }] }),
+    body: JSON.stringify({
+      points: points.map((p) => ({
+        id: p.id,
+        vector: p.vector,
+        payload: { ...p.payload, userId },
+      })),
+    }),
+  });
+  if (!res.ok) throw new Error(`Qdrant upsert failed: ${await res.text()}`);
+}
+
+/** Removes a note and every facet point derived from it. */
+export async function deleteNoteTree(noteId: string, userId: string) {
+  await ensureCollection();
+  const res = await qdrant(`/collections/${COLLECTION}/points/delete?wait=true`, {
+    method: 'POST',
+    body: JSON.stringify({
+      filter: {
+        must: [{ key: 'userId', match: { value: userId } }],
+        should: [
+          { has_id: [noteId] },
+          { key: 'parentId', match: { value: noteId } },
+        ],
+        min_should: 1,
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`Qdrant delete failed: ${await res.text()}`);
+}
+
+/** Every read is scoped to one user. This is the isolation boundary. */
+const ownerFilter = (userId: string) => ({
+  must: [{ key: 'userId', match: { value: userId } }],
+});
+
+export async function upsertNote(note: Note, vector: number[], userId: string) {
+  await ensureCollection();
+  const { id, ...rest } = note;
+  const res = await qdrant(`/collections/${COLLECTION}/points?wait=true`, {
+    method: 'PUT',
+    body: JSON.stringify({ points: [{ id, vector, payload: { ...rest, userId } }] }),
   });
   if (!res.ok) throw new Error(`Qdrant upsert failed: ${await res.text()}`);
 }
@@ -77,8 +135,7 @@ export interface ScrolledPoint {
   vector?: number[];
 }
 
-/** Pulls every note. Fine at prototype scale; page through if this ever grows. */
-export async function scrollNotes(withVectors = false): Promise<ScrolledPoint[]> {
+export async function scrollNotes(userId: string, withVectors = false): Promise<ScrolledPoint[]> {
   await ensureCollection();
   const out: ScrolledPoint[] = [];
   let offset: unknown = undefined;
@@ -90,6 +147,7 @@ export async function scrollNotes(withVectors = false): Promise<ScrolledPoint[]>
         limit: 256,
         with_payload: true,
         with_vector: withVectors,
+        filter: ownerFilter(userId),
         ...(offset ? { offset } : {}),
       }),
     });
@@ -113,20 +171,72 @@ export interface SearchHit {
   payload: Omit<Note, 'id'>;
 }
 
-export async function searchNotes(vector: number[], limit = 6): Promise<SearchHit[]> {
+export interface SearchOptions {
+  /** Restrict to certain point kinds, e.g. only decisions. */
+  kinds?: PointKind[];
+  intent?: string;
+  spaceId?: string;
+}
+
+export async function searchNotes(
+  vector: number[],
+  userId: string,
+  limit = 6,
+  opts: SearchOptions = {}
+): Promise<SearchHit[]> {
   await ensureCollection();
+
+  const must: Array<Record<string, unknown>> = [
+    { key: 'userId', match: { value: userId } },
+  ];
+  if (opts.kinds?.length) must.push({ key: 'kind', match: { any: opts.kinds } });
+  if (opts.intent) must.push({ key: 'intent', match: { value: opts.intent } });
+  if (opts.spaceId) must.push({ key: 'spaceId', match: { value: opts.spaceId } });
+
   const res = await qdrant(`/collections/${COLLECTION}/points/search`, {
     method: 'POST',
-    body: JSON.stringify({ vector, limit, with_payload: true }),
+    body: JSON.stringify({ vector, limit, with_payload: true, filter: { must } }),
   });
   if (!res.ok) {
     if (res.status === 404) return [];
     throw new Error(`Qdrant search failed: ${await res.text()}`);
   }
   const data = await res.json();
-  return (data.result ?? []).map((h: { id: string | number; score: number; payload: Omit<Note, 'id'> }) => ({
-    id: String(h.id),
-    score: h.score,
-    payload: h.payload,
-  }));
+  return (data.result ?? []).map(
+    (h: { id: string | number; score: number; payload: Omit<Note, 'id'> }) => ({
+      id: String(h.id),
+      score: h.score,
+      payload: h.payload,
+    })
+  );
+}
+
+/** Used once, by the migration, to adopt pre-auth notes into an account. */
+export async function claimOrphanNotes(userId: string): Promise<number> {
+  await ensureCollection();
+  const res = await qdrant(`/collections/${COLLECTION}/points/scroll`, {
+    method: 'POST',
+    body: JSON.stringify({
+      limit: 256,
+      with_payload: true,
+      filter: { must_not: [{ key: 'userId', match: { value: userId } }] },
+    }),
+  });
+  if (!res.ok) return 0;
+
+  const data = await res.json();
+  const orphans = (data.result?.points ?? []).filter(
+    (p: { payload?: { userId?: string } }) => !p.payload?.userId
+  );
+  if (orphans.length === 0) return 0;
+
+  const claim = await qdrant(`/collections/${COLLECTION}/points/payload?wait=true`, {
+    method: 'POST',
+    body: JSON.stringify({
+      payload: { userId },
+      points: orphans.map((p: { id: string | number }) => p.id),
+    }),
+  });
+  if (!claim.ok) throw new Error(`Qdrant claim failed: ${await claim.text()}`);
+  return orphans.length;
 }

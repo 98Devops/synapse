@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import GraphCanvas from '@/components/GraphCanvas';
+import GraphCanvas, { type GraphControls } from '@/components/GraphCanvas';
+import GraphToolbar from '@/components/GraphToolbar';
 import CapturePanel from '@/components/CapturePanel';
 import AgentPanel from '@/components/AgentPanel';
 import DetailPanel from '@/components/DetailPanel';
@@ -12,7 +13,7 @@ import LensBar, { DEFAULT_LENS, type Lens } from '@/components/LensBar';
 import { computeInsights } from '@/lib/insights';
 import { useTheme } from '@/lib/useTheme';
 import type { Cluster } from '@/lib/cluster';
-import type { GraphData, Note } from '@/lib/types';
+import type { GraphData, Note, Space } from '@/lib/types';
 
 const EMPTY: GraphData = {
   nodes: [],
@@ -26,6 +27,7 @@ export default function Home() {
   const [graph, setGraph] = useState<GraphData>(EMPTY);
   const [notes, setNotes] = useState<Note[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
+  const [spaces, setSpaces] = useState<Space[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [highlight, setHighlight] = useState<Set<string>>(new Set());
   const [lens, setLens] = useState<Lens>(DEFAULT_LENS);
@@ -34,18 +36,30 @@ export default function Home() {
   const [mobileTab, setMobileTab] = useState<MobileTab>('graph');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const graphControls = useRef<GraphControls | null>(null);
   const { isDark, toggle } = useTheme();
+
+  useEffect(() => {
+    fetch('/api/me')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.user?.email && setEmail(d.user.email))
+      .catch(() => {});
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
-      const [g, n] = await Promise.all([
+      const [g, n, s] = await Promise.all([
         fetch('/api/graph').then((r) => r.json()),
         fetch('/api/notes').then((r) => r.json()),
+        fetch('/api/spaces').then((r) => r.json()),
       ]);
       if (g.error) throw new Error(g.error);
       if (n.error) throw new Error(n.error);
       setGraph(g);
       setNotes(n.notes ?? []);
+      setSpaces(s.spaces ?? []);
       setError(null);
     } catch (err) {
       setError((err as Error).message);
@@ -63,6 +77,17 @@ export default function Home() {
   }, [refresh]);
 
   const insight = useMemo(() => computeInsights(graph, notes), [graph, notes]);
+
+  // Facet counts so each filter can say what it would actually do.
+  const lensCounts = useMemo(() => {
+    const sentiments: Record<string, number> = {};
+    for (const n of notes) sentiments[n.sentiment] = (sentiments[n.sentiment] ?? 0) + 1;
+    const entityTypes: Record<string, number> = {};
+    for (const n of graph.nodes) {
+      if (n.kind === 'entity') entityTypes[n.variant] = (entityTypes[n.variant] ?? 0) + 1;
+    }
+    return { sentiments, entityTypes };
+  }, [notes, graph.nodes]);
 
   const visibleIds = useMemo(() => {
     const q = lens.query.trim().toLowerCase();
@@ -174,6 +199,8 @@ export default function Home() {
         setHelpOpen(false);
       }
       if (e.key === 'r' || e.key === 'R') window.dispatchEvent(new Event('synapse:record'));
+      if (e.key === 'f' || e.key === 'F') graphControls.current?.fit();
+      if (e.key === '0') graphControls.current?.reset();
       if (e.key === '1') setLens((l) => ({ ...l, layout: 'constellation' }));
       if (e.key === '2') setLens((l) => ({ ...l, layout: 'timeline' }));
       if (e.key === '3') setLens((l) => ({ ...l, layout: 'radial' }));
@@ -210,6 +237,18 @@ export default function Home() {
           visibleIds={visibleIds}
           showClusters={lens.showClusters}
           isDark={isDark}
+          onViewChange={setZoom}
+          controlsRef={graphControls}
+        />
+      </div>
+
+      {/* zoom / fit controls â€” the way back out when you've zoomed in */}
+      <div className="pointer-events-none absolute bottom-[76px] left-1/2 z-20 -translate-x-1/2 lg:bottom-5 lg:left-auto lg:right-[340px] lg:translate-x-0 xl:right-[364px]">
+        <GraphToolbar
+          controls={graphControls}
+          zoom={zoom}
+          hidden={visibleIds ? graph.nodes.length - visibleIds.size : 0}
+          total={graph.nodes.length}
         />
       </div>
 
@@ -254,14 +293,32 @@ export default function Home() {
             onClick={() => setPaletteOpen(true)}
             className="mono hidden rounded-lg border border-line px-2 py-1.5 text-[10px] text-muted transition hover:border-accent hover:text-ink sm:block"
           >
-            ⌘K
+            âŒ˜K
           </button>
+          <form action="/auth/signout" method="post" className="flex">
+            <button
+              type="submit"
+              title={email ? `Signed in as ${email} â€” sign out` : 'Sign out'}
+              className="rounded-lg p-1.5 text-muted transition hover:bg-rose/10 hover:text-rose"
+              aria-label="Sign out"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M15 17l5-5-5-5M20 12H9" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M12 19H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6" strokeLinecap="round" />
+              </svg>
+            </button>
+          </form>
         </motion.div>
       </header>
 
       {/* ---------------- lens bar (desktop) ---------------- */}
       <div className="pointer-events-none absolute left-1/2 top-[74px] z-20 hidden -translate-x-1/2 xl:block">
-        <LensBar lens={lens} onChange={setLens} matchCount={visibleIds ? visibleIds.size : graph.nodes.length} />
+        <LensBar
+          lens={lens}
+          onChange={setLens}
+          matchCount={visibleIds ? visibleIds.size : graph.nodes.length}
+          counts={lensCounts}
+        />
       </div>
 
       {/* ---------------- desktop rails ---------------- */}
@@ -285,9 +342,11 @@ export default function Home() {
           insight={insight}
           clusters={clusters}
           notes={notes}
+          spaces={spaces}
           onSelect={selectFromPanel}
           onToggleAction={handleToggleAction}
           onFocusCluster={focusCluster}
+          onFiled={refresh}
         />
       </motion.div>
 
@@ -312,9 +371,11 @@ export default function Home() {
                   insight={insight}
                   clusters={clusters}
                   notes={notes}
+                  spaces={spaces}
                   onSelect={selectFromPanel}
                   onToggleAction={handleToggleAction}
                   onFocusCluster={focusCluster}
+                  onFiled={refresh}
                 />
               )}
             </div>
@@ -399,7 +460,7 @@ export default function Home() {
             exit={{ opacity: 0 }}
             className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center"
           >
-            <div className="label">Loading graph…</div>
+            <div className="label">Loading graphâ€¦</div>
           </motion.div>
         )}
 
@@ -445,8 +506,10 @@ function Divider({ className = '' }: { className?: string }) {
 }
 
 const SHORTCUTS: Array<[string, string]> = [
-  ['⌘K / Ctrl+K', 'Command palette — jump anywhere'],
+  ['âŒ˜K / Ctrl+K', 'Command palette â€” jump anywhere'],
   ['R', 'Start / stop recording'],
+  ['F', 'Fit the whole graph to view'],
+  ['0', 'Reset zoom to 100%'],
   ['1 / 2 / 3', 'Constellation / Timeline / Radial layout'],
   ['Esc', 'Clear selection and highlights'],
   ['?', 'Toggle this panel'],
