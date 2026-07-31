@@ -1,4 +1,4 @@
-import { supabaseServer } from '@/lib/supabase/server';
+import { supabaseAdmin, supabaseServer } from '@/lib/supabase/server';
 import type { Citation, Note, NoteStatus, Space } from '@/lib/types';
 import type { Placement } from '@/lib/classify';
 
@@ -67,6 +67,140 @@ function rowToNote(row: any): Note {
   };
 }
 
+/**
+ * Just the note row. This is the only write on the capture critical path —
+ * everything else is deferred so the user gets their confirmation sooner.
+ */
+export async function insertNoteRow(
+  userId: string,
+  note: Note,
+  placement: Placement,
+  audioPath?: string | null
+) {
+  const supabase = await supabaseServer();
+  const { error } = await supabase.from('notes').insert({
+    id: note.id,
+    user_id: userId,
+    title: note.title,
+    text: note.text,
+    summary: note.summary,
+    sentiment: note.sentiment,
+    tags: note.tags,
+    source: note.source,
+    audio_path: audioPath ?? null,
+    created_at: note.createdAt,
+    intent: note.intent,
+    intent_confidence: note.intentConfidence,
+    status: placement.status,
+    space_id: placement.spaceId,
+    thread_id: placement.threadId,
+    unclassified_reason: placement.reason ?? null,
+  });
+  if (error) throw new Error(`insert note: ${error.message}`);
+}
+
+/**
+ * Entities and facets, written after the response has gone out. Uses the
+ * service-role client because the request's cookie scope is gone by then; the
+ * user_id is taken from the already-verified session, never from input.
+ *
+ * Every independent write runs concurrently — these were eight sequential
+ * round trips at ~450ms each.
+ */
+export async function insertFacets(userId: string, note: Note) {
+  const supabase = supabaseAdmin();
+  // Supabase builders are thenable rather than real Promises.
+  const jobs: Array<PromiseLike<unknown>> = [];
+
+  if (note.actions.length) {
+    jobs.push(
+      supabase.from('actions').insert(
+        note.actions.map((a) => ({
+          note_id: note.id,
+          user_id: userId,
+          text: a.text,
+          owner: a.owner ?? null,
+          due_date: a.dueDate ?? null,
+          priority: a.priority ?? 'normal',
+        }))
+      )
+    );
+  }
+  if (note.dataPoints.length) {
+    jobs.push(
+      supabase.from('data_points').insert(
+        note.dataPoints.map((d) => ({
+          note_id: note.id,
+          user_id: userId,
+          label: d.label,
+          value: d.value,
+          unit: d.unit ?? null,
+          kind: d.kind,
+        }))
+      )
+    );
+  }
+  if (note.questions.length) {
+    jobs.push(
+      supabase
+        .from('questions')
+        .insert(note.questions.map((text) => ({ note_id: note.id, user_id: userId, text })))
+    );
+  }
+  if (note.decisions.length) {
+    jobs.push(
+      supabase.from('decisions').insert(
+        note.decisions.map((d) => ({
+          note_id: note.id,
+          user_id: userId,
+          text: d.text,
+          alternatives: d.alternatives,
+        }))
+      )
+    );
+  }
+
+  // Entities must resolve before they can be linked, so they're their own chain.
+  jobs.push(linkEntities(userId, note));
+
+  const results = await Promise.allSettled(jobs);
+  for (const r of results) {
+    if (r.status === 'rejected') console.error('[db] facet write failed:', r.reason);
+  }
+}
+
+async function linkEntities(userId: string, note: Note) {
+  if (!note.entities.length) return;
+  const supabase = supabaseAdmin();
+
+  const { data: existing } = await supabase
+    .from('entities')
+    .select('id, name, type')
+    .eq('user_id', userId);
+
+  const key = (n: string, t: string) => `${t}:${n.trim().toLowerCase()}`;
+  const known = new Map((existing ?? []).map((e) => [key(e.name, e.type), e.id]));
+
+  const missing = note.entities.filter((e) => !known.has(key(e.name, e.type)));
+  if (missing.length) {
+    const { data: created } = await supabase
+      .from('entities')
+      .insert(missing.map((e) => ({ user_id: userId, name: e.name, type: e.type })))
+      .select('id, name, type');
+    for (const e of created ?? []) known.set(key(e.name, e.type), e.id);
+  }
+
+  const links = note.entities
+    .map((e) => known.get(key(e.name, e.type)))
+    .filter((id): id is string => Boolean(id))
+    .map((entity_id) => ({ note_id: note.id, entity_id }));
+
+  if (links.length) {
+    await supabase.from('note_entities').upsert(links, { onConflict: 'note_id,entity_id' });
+  }
+}
+
+/** Full synchronous write. Used by the migration, which is not latency-sensitive. */
 export async function insertNote(
   userId: string,
   note: Note,

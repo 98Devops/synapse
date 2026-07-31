@@ -9,6 +9,7 @@ import AgentPanel from '@/components/AgentPanel';
 import DetailPanel from '@/components/DetailPanel';
 import PulsePanel from '@/components/PulsePanel';
 import CommandPalette, { type Command } from '@/components/CommandPalette';
+import Dashboard from '@/components/Dashboard';
 import LensBar, { DEFAULT_LENS, type Lens } from '@/components/LensBar';
 import { computeInsights } from '@/lib/insights';
 import { useTheme } from '@/lib/useTheme';
@@ -22,6 +23,7 @@ const EMPTY: GraphData = {
 };
 
 type MobileTab = 'graph' | 'capture' | 'agent' | 'pulse';
+type View = 'graph' | 'dashboard';
 
 export default function Home() {
   const [graph, setGraph] = useState<GraphData>(EMPTY);
@@ -38,6 +40,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [view, setView] = useState<View>('graph');
   const graphControls = useRef<GraphControls | null>(null);
   const { isDark, toggle } = useTheme();
 
@@ -201,6 +204,8 @@ export default function Home() {
       if (e.key === 'r' || e.key === 'R') window.dispatchEvent(new Event('synapse:record'));
       if (e.key === 'f' || e.key === 'F') graphControls.current?.fit();
       if (e.key === '0') graphControls.current?.reset();
+      if (e.key === 'h' || e.key === 'H') setView('dashboard');
+      if (e.key === 'g' || e.key === 'G') setView('graph');
       if (e.key === '1') setLens((l) => ({ ...l, layout: 'constellation' }));
       if (e.key === '2') setLens((l) => ({ ...l, layout: 'timeline' }));
       if (e.key === '3') setLens((l) => ({ ...l, layout: 'radial' }));
@@ -212,6 +217,8 @@ export default function Home() {
   const commands: Command[] = useMemo(
     () => [
       { id: 'act:record', label: 'Record a voice note', hint: 'R', group: 'Actions', run: () => window.dispatchEvent(new Event('synapse:record')) },
+      { id: 'act:home', label: 'Go to Home dashboard', hint: 'H', group: 'Actions', run: () => setView('dashboard') },
+      { id: 'act:graph', label: 'Go to Graph', hint: 'G', group: 'Actions', run: () => setView('graph') },
       { id: 'act:theme', label: `Switch to ${isDark ? 'light' : 'dark'} mode`, group: 'Actions', run: toggle },
       { id: 'act:refresh', label: 'Rebuild graph', group: 'Actions', run: () => refresh() },
       { id: 'act:clear', label: 'Clear highlights and selection', hint: 'esc', group: 'Actions', run: () => { setHighlight(new Set()); setSelectedId(null); } },
@@ -242,8 +249,36 @@ export default function Home() {
         />
       </div>
 
-      {/* zoom / fit controls â€” the way back out when you've zoomed in */}
-      <div className="pointer-events-none absolute bottom-[76px] left-1/2 z-20 -translate-x-1/2 lg:bottom-5 lg:left-auto lg:right-[340px] lg:translate-x-0 xl:right-[364px]">
+      {/* dashboard sits over the graph, which keeps simulating underneath */}
+      <AnimatePresence>
+        {view === 'dashboard' && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-[15] bg-bg/92 backdrop-blur-md"
+          >
+            <Dashboard
+              notes={notes}
+              spaces={spaces}
+              graph={graph}
+              insight={insight}
+              onSelect={(id) => {
+                setView('graph');
+                selectFromPanel(id);
+              }}
+              onToggleAction={handleToggleAction}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* zoom / fit controls — the way back out when you've zoomed in */}
+      <div
+        className={`pointer-events-none absolute bottom-[76px] left-1/2 z-20 -translate-x-1/2 lg:bottom-5 lg:left-auto lg:right-[340px] lg:translate-x-0 xl:right-[364px] ${
+          view === 'dashboard' ? 'hidden' : ''
+        }`}
+      >
         <GraphToolbar
           controls={graphControls}
           zoom={zoom}
@@ -265,12 +300,37 @@ export default function Home() {
           transition={{ duration: 0.5, delay: 0.1 }}
           className="panel pointer-events-auto flex items-center gap-3 rounded-xl px-3 py-2 sm:gap-4 sm:px-4 sm:py-2.5"
         >
-          <Stat value={graph.stats.notes} label="notes" className="text-accent" />
+          {/* view switch */}
+          <div className="flex items-center gap-0.5 rounded-lg bg-bg/50 p-0.5">
+            {(
+              [
+                ['graph', 'Graph'],
+                ['dashboard', 'Home'],
+              ] as Array<[View, string]>
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setView(key)}
+                className={`relative rounded-md px-2 py-1 text-[11px] transition ${
+                  view === key ? 'text-ink' : 'text-muted hover:text-ink/80'
+                }`}
+              >
+                {view === key && (
+                  <motion.span
+                    layoutId="view-pill"
+                    className="absolute inset-0 rounded-md bg-accent-soft"
+                    transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+                  />
+                )}
+                <span className="relative">{label}</span>
+              </button>
+            ))}
+          </div>
           <Divider />
-          <Stat value={graph.stats.entities} label="entities" className="text-cyan" />
+          <Stat value={graph.stats.notes} label="notes" className="text-accent" />
           <Divider className="hidden sm:block" />
           <div className="hidden sm:block">
-            <Stat value={graph.stats.connections} label="links" className="text-rose" />
+            <Stat value={graph.stats.entities} label="entities" className="text-cyan" />
           </div>
           <Divider />
           <button
@@ -298,7 +358,7 @@ export default function Home() {
           <form action="/auth/signout" method="post" className="flex">
             <button
               type="submit"
-              title={email ? `Signed in as ${email} â€” sign out` : 'Sign out'}
+              title={email ? `Signed in as ${email} — sign out` : 'Sign out'}
               className="rounded-lg p-1.5 text-muted transition hover:bg-rose/10 hover:text-rose"
               aria-label="Sign out"
             >
@@ -312,7 +372,11 @@ export default function Home() {
       </header>
 
       {/* ---------------- lens bar (desktop) ---------------- */}
-      <div className="pointer-events-none absolute left-1/2 top-[74px] z-20 hidden -translate-x-1/2 xl:block">
+      <div
+        className={`pointer-events-none absolute left-1/2 top-[74px] z-20 -translate-x-1/2 ${
+          view === 'dashboard' ? 'hidden' : 'hidden xl:block'
+        }`}
+      >
         <LensBar
           lens={lens}
           onChange={setLens}
@@ -329,14 +393,21 @@ export default function Home() {
         className="absolute bottom-5 left-5 top-[136px] z-20 hidden w-[330px] flex-col gap-4 lg:flex"
       >
         <CapturePanel onStored={() => setTimeout(refresh, 400)} />
-        <AgentPanel onCitations={handleCitations} onSelect={selectFromPanel} noteCount={graph.stats.notes} />
+        <AgentPanel
+          onCitations={handleCitations}
+          onSelect={selectFromPanel}
+          noteCount={graph.stats.notes}
+          onSaved={() => setTimeout(refresh, 400)}
+        />
       </motion.div>
 
       <motion.div
         initial={{ opacity: 0, x: 24 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.5, delay: 0.2 }}
-        className="absolute bottom-5 right-5 top-[136px] z-20 hidden w-[310px] flex-col xl:flex"
+        className={`absolute bottom-5 right-5 top-[136px] z-20 w-[310px] flex-col ${
+          view === 'dashboard' ? 'hidden' : 'hidden xl:flex'
+        }`}
       >
         <PulsePanel
           insight={insight}
@@ -364,7 +435,12 @@ export default function Home() {
             <div className="flex min-h-0 flex-1 flex-col gap-3">
               {mobileTab === 'capture' && <CapturePanel onStored={() => setTimeout(refresh, 400)} />}
               {mobileTab === 'agent' && (
-                <AgentPanel onCitations={handleCitations} onSelect={selectFromPanel} noteCount={graph.stats.notes} />
+                <AgentPanel
+                  onCitations={handleCitations}
+                  onSelect={selectFromPanel}
+                  noteCount={graph.stats.notes}
+                  onSaved={() => setTimeout(refresh, 400)}
+                />
               )}
               {mobileTab === 'pulse' && (
                 <PulsePanel
@@ -460,7 +536,7 @@ export default function Home() {
             exit={{ opacity: 0 }}
             className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center"
           >
-            <div className="label">Loading graphâ€¦</div>
+            <div className="label">Loading graph…</div>
           </motion.div>
         )}
 
@@ -506,8 +582,9 @@ function Divider({ className = '' }: { className?: string }) {
 }
 
 const SHORTCUTS: Array<[string, string]> = [
-  ['âŒ˜K / Ctrl+K', 'Command palette â€” jump anywhere'],
+  ['âŒ˜K / Ctrl+K', 'Command palette — jump anywhere'],
   ['R', 'Start / stop recording'],
+  ['H / G', 'Home dashboard / Graph'],
   ['F', 'Fit the whole graph to view'],
   ['0', 'Reset zoom to 100%'],
   ['1 / 2 / 3', 'Constellation / Timeline / Radial layout'],

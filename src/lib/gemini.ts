@@ -11,10 +11,11 @@ export const EMBED_MODEL = 'gemini-embedding-001';
  */
 export const CHAT_MODEL = 'gemini-3.1-flash-lite';
 /**
- * Free-tier quota is per-model and low (~5 rpm). When the primary is rate
- * limited we fall down this chain rather than failing the user's capture.
+ * Fallbacks must have free-tier quota, or they make things worse: measured,
+ * gemini-3.6-flash returned 429 on 4 of 6 calls and gemini-2.0-flash on 6 of 6,
+ * turning a hiccup into a 40-second retry storm. Only lite models are listed.
  */
-const CHAT_FALLBACKS = ['gemini-3.6-flash', 'gemini-2.0-flash', 'gemini-flash-lite-latest'];
+const CHAT_FALLBACKS = ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest'];
 /** Truncated from the model's native 3072. Must match the Qdrant collection size. */
 export const VECTOR_SIZE = 768;
 
@@ -42,8 +43,8 @@ async function geminiFetch(path: string, body: unknown, attempts = 3) {
       (err as Error & { status?: number }).status = res.status;
       throw err;
     }
-    // 1s, 3s, 7s — enough to clear a per-minute burst limit.
-    await sleep(1000 * (2 ** i * 2 - 1));
+    // Short backoff: falling through to another model beats waiting here.
+    await sleep(400 * 2 ** i);
   }
   throw new Error(`Gemini ${path} failed: ${lastErr}`);
 }

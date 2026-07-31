@@ -28,13 +28,33 @@ export function useSpeaker() {
   const [speaking, setSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [engine, setEngine] = useState<'elevenlabs' | 'gemini'>('gemini');
+  const [voices, setVoices] = useState<Array<{ id: string; label: string; description: string }>>([]);
+  const [voiceId, setVoiceId] = useState<string | null>(null);
 
-  // Which engine is actually configured server-side drives the UI label.
+  // Which engine is configured server-side drives both the label and the picker.
   useEffect(() => {
     fetch('/api/voices')
       .then((r) => r.json())
-      .then((d) => d.engine && setEngine(d.engine))
+      .then((d) => {
+        if (d.engine) setEngine(d.engine);
+        if (d.voices) setVoices(d.voices);
+      })
       .catch(() => {});
+    try {
+      const saved = localStorage.getItem('synapse-voice-id');
+      if (saved) setVoiceId(saved);
+    } catch {
+      /* private mode */
+    }
+  }, []);
+
+  const chooseVoice = useCallback((id: string) => {
+    setVoiceId(id);
+    try {
+      localStorage.setItem('synapse-voice-id', id);
+    } catch {
+      /* private mode */
+    }
   }, []);
 
   const spokenUpTo = useRef(0);
@@ -99,7 +119,8 @@ export function useSpeaker() {
 
   /** Speak whatever remains once the stream has finished. */
   const flush = useCallback(
-    async (fullText: string, voice = 'Kore') => {
+    async (fullText: string, voiceOverride?: string) => {
+      const voice = voiceOverride ?? voiceId ?? undefined;
       const clean = speakable(fullText);
       if (!clean) return;
 
@@ -149,7 +170,7 @@ export function useSpeaker() {
         setSpeaking(false);
       }
     },
-    [mode]
+    [mode, voiceId]
   );
 
   /** Reset the sentence cursor before a new answer starts. */
@@ -160,5 +181,18 @@ export function useSpeaker() {
 
   useEffect(() => () => stop(), [stop]);
 
-  return { mode, setMode: persist, speaking, error, engine, feed, flush, reset, stop };
+  return {
+    mode,
+    setMode: persist,
+    speaking,
+    error,
+    engine,
+    voices,
+    voiceId,
+    chooseVoice,
+    feed,
+    flush,
+    reset,
+    stop,
+  };
 }

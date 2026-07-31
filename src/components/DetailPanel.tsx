@@ -1,7 +1,38 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { GraphNode, Note } from '@/lib/types';
+
+/** Plays the original recording; the URL is signed on demand and expires. */
+function AudioPlayer({ noteId }: { noteId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [state, setState] = useState<'loading' | 'ready' | 'none'>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    setState('loading');
+    fetch(`/api/notes/${noteId}/audio`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        if (d.url) {
+          setUrl(d.url);
+          setState('ready');
+        } else setState('none');
+      })
+      .catch(() => !cancelled && setState('none'));
+    return () => {
+      cancelled = true;
+    };
+  }, [noteId]);
+
+  if (state === 'none') return null;
+  if (state === 'loading') {
+    return <div className="mono text-[10px] text-faint">loading audio…</div>;
+  }
+  return <audio controls src={url!} className="h-8 w-full" preload="none" />;
+}
 
 const VARIANT_COLOR: Record<string, string> = {
   positive: '#34d399',
@@ -75,6 +106,12 @@ export default function DetailPanel({ node, notes, onClose, onSelect, onDelete }
               <>
                 {note.summary && (
                   <p className="mb-4 text-[13px] leading-relaxed text-muted">{note.summary}</p>
+                )}
+
+                {note.audioPath && (
+                  <Section label="Recording">
+                    <AudioPlayer noteId={note.id} />
+                  </Section>
                 )}
 
                 <Section label="Transcript">

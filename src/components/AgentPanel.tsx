@@ -31,9 +31,13 @@ interface Props {
   onCitations: (ids: string[]) => void;
   onSelect: (id: string) => void;
   noteCount: number;
+  /** Lets a conversation become a note, so reasoning enters the graph. */
+  onSaved?: () => void;
 }
 
-export default function AgentPanel({ onCitations, onSelect, noteCount }: Props) {
+export default function AgentPanel({ onCitations, onSelect, noteCount, onSaved }: Props) {
+  const [saved, setSaved] = useState<'idle' | 'saving' | 'done'>('idle');
+  const [voiceMenu, setVoiceMenu] = useState(false);
   const [query, setQuery] = useState('');
   const [answer, setAnswer] = useState('');
   const [steps, setSteps] = useState<Step[]>([]);
@@ -65,6 +69,7 @@ export default function AgentPanel({ onCitations, onSelect, noteCount }: Props) 
       setSteps([]);
       setCitations([]);
       setError(null);
+      setSaved('idle');
       onCitations([]);
 
       let accumulated = '';
@@ -164,6 +169,27 @@ export default function AgentPanel({ onCitations, onSelect, noteCount }: Props) 
   };
 
   const clean = answer.replace(/\s*\[id=[^\]]+\]/g, '');
+
+  /** Turns the exchange into a note, so the thinking doesn't die in the chat. */
+  async function saveExchange() {
+    if (saved !== 'idle' || !clean) return;
+    setSaved('saving');
+    try {
+      await fetch('/api/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: `I asked my second brain: "${query}"\n\nThe answer was: ${clean}`,
+          source: 'text',
+        }),
+      });
+      setSaved('done');
+      onSaved?.();
+    } catch {
+      setSaved('idle');
+    }
+  }
+
   const cycleVoice = () =>
     speaker.setMode(VOICE_CYCLE[(VOICE_CYCLE.indexOf(speaker.mode) + 1) % VOICE_CYCLE.length]);
 
@@ -178,7 +204,50 @@ export default function AgentPanel({ onCitations, onSelect, noteCount }: Props) 
           <span className="label">Agent</span>
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="relative flex items-center gap-1">
+          {speaker.engine === 'elevenlabs' && speaker.voices.length > 0 && (
+            <div className="relative">
+              <button
+                onClick={() => setVoiceMenu((v) => !v)}
+                title="Choose the voice"
+                className="mono rounded-md px-1.5 py-1 text-[10px] text-muted transition hover:bg-accent-soft hover:text-ink"
+              >
+                {speaker.voices.find((v) => v.id === speaker.voiceId)?.label ?? 'Voice'}
+              </button>
+
+              <AnimatePresence>
+                {voiceMenu && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }}
+                    className="panel absolute right-0 top-8 z-50 max-h-64 w-56 overflow-y-auto rounded-xl p-1"
+                  >
+                    {speaker.voices.map((v) => (
+                      <button
+                        key={v.id}
+                        onClick={() => {
+                          speaker.chooseVoice(v.id);
+                          setVoiceMenu(false);
+                          speaker.reset();
+                          speaker.flush(`Hello, I'm ${v.label}. I'll read your notes back to you.`, v.id);
+                        }}
+                        className={`block w-full rounded-lg px-2 py-1.5 text-left transition hover:bg-accent-soft ${
+                          v.id === speaker.voiceId ? 'bg-accent-soft' : ''
+                        }`}
+                      >
+                        <div className="text-[12px] text-ink">{v.label}</div>
+                        {v.description && (
+                          <div className="text-[10px] leading-tight text-muted">{v.description}</div>
+                        )}
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+
           {speaker.speaking && (
             <button
               onClick={speaker.stop}
@@ -336,6 +405,20 @@ export default function AgentPanel({ onCitations, onSelect, noteCount }: Props) 
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
             <Markdown text={clean} />
             {busy && <span className="ml-0.5 inline-block h-3.5 w-[2px] animate-pulse bg-accent align-middle" />}
+
+            {!busy && (
+              <button
+                onClick={saveExchange}
+                disabled={saved !== 'idle'}
+                className="mono mt-3 rounded-lg border border-line px-2 py-1 text-[10px] text-muted transition hover:border-accent hover:text-accent disabled:opacity-60"
+              >
+                {saved === 'done'
+                  ? '✓ saved to your brain'
+                  : saved === 'saving'
+                    ? 'saving…'
+                    : '+ save this exchange as a note'}
+              </button>
+            )}
           </motion.div>
         )}
 

@@ -5,23 +5,22 @@ import { buildTools, type ToolTrace } from './tools';
 
 export const AGENT_SYSTEM = `You are Synapse — the user's second brain.
 
-You have tools that read the user's own recorded notes and the knowledge graph
-built from them. Everything you say about the user's life must come from those
-tools. You are not answering from world knowledge.
+Your tools read the user's own notes. Everything you say about their life comes
+from those tools, never from world knowledge.
 
-How to work:
-- Always call at least one tool before answering a question about the user's notes.
-- Start broad (search_notes or graph_overview), then follow threads with
-  related_notes and entity_notes when connections matter. Multi-hop is your edge
-  over plain search — use it.
-- Cite notes inline by their id like [id=abc-123] the first time you reference
-  them. The interface turns these into clickable sources, so be accurate.
-- If the tools return nothing useful, say so plainly. Never invent a note, a
-  person, a date, or a commitment.
-- Write in the second person ("you mentioned", "you were worried about").
-- Be concise and specific. Lead with the answer. Surface a connection the user
-  might not have noticed when there is a real one.
-- If the brain is empty or nearly empty, say so and suggest what to record.`;
+Rules:
+- Call at least one tool before answering. Pick the specific tool over the broad
+  one: list_decisions for decisions, list_open_questions for what's unresolved,
+  list_action_items for commitments, list_data_points for figures, get_thread to
+  catch up on an area. Use search_notes when nothing more specific fits.
+- One tool is usually enough. Only chain a second when the first genuinely
+  didn't answer the question.
+- Cite notes inline as [id=abc-123] the first time you mention them.
+- If the tools return nothing, say so. Never invent a note, person, date or
+  commitment.
+- Second person ("you decided", "you were worried about"). Lead with the answer.
+- Be brief — two or three sentences unless asked for more. This is often read
+  aloud, so write for the ear.`;
 
 function model(name: string) {
   return new ChatGoogleGenerativeAI({
@@ -44,12 +43,14 @@ export function createSynapseAgent(trace: ToolTrace, userId: string) {
     tools: buildTools(trace, userId),
     systemPrompt: AGENT_SYSTEM,
     middleware: [
+      // Retry briefly, then move to another model. Long backoff here is what
+      // produced 40s agent turns when the fallback models were out of quota.
       modelRetryMiddleware({
-        maxRetries: 2,
-        initialDelayMs: 1000,
-        backoffFactor: 3,
+        maxRetries: 1,
+        initialDelayMs: 400,
+        backoffFactor: 2,
       }),
-      modelFallbackMiddleware(model('gemini-3.6-flash'), model('gemini-2.0-flash')),
+      modelFallbackMiddleware(model('gemini-3.5-flash-lite'), model('gemini-flash-lite-latest')),
     ],
   });
 }

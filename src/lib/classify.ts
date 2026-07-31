@@ -14,8 +14,22 @@ export interface Placement {
   reason?: string;
 }
 
-/** Recent corrections, fed back into the extraction prompt as few-shot examples. */
+/**
+ * Recent corrections, fed back into the extraction prompt as few-shot examples.
+ * Cached in-process: this sits on the capture critical path and corrections
+ * change rarely, so paying a round trip for it every time is wasteful.
+ */
+const correctionCache = new Map<string, { at: number; value: LearnedExample[] }>();
+const CORRECTION_TTL = 60_000;
+
+export function invalidateCorrections(userId: string) {
+  correctionCache.delete(userId);
+}
+
 export async function learnedCorrections(userId: string): Promise<LearnedExample[]> {
+  const hit = correctionCache.get(userId);
+  if (hit && Date.now() - hit.at < CORRECTION_TTL) return hit.value;
+
   const supabase = await supabaseServer();
   const { data } = await supabase
     .from('corrections')
@@ -24,9 +38,12 @@ export async function learnedCorrections(userId: string): Promise<LearnedExample
     .order('created_at', { ascending: false })
     .limit(8);
 
-  return (data ?? [])
+  const value = (data ?? [])
     .filter((c) => c.note_excerpt)
     .map((c) => ({ excerpt: c.note_excerpt, field: c.field, to: c.to_value }));
+
+  correctionCache.set(userId, { at: Date.now(), value });
+  return value;
 }
 
 const norm = (s: string) => s.trim().toLowerCase();
@@ -135,11 +152,12 @@ async function resolveThread(
   return error ? null : data.id;
 }
 
-export async function placeNote(
-  userId: string,
-  extraction: Extraction,
-  similarNoteIds: string[]
-): Promise<Placement> {
+/**
+ * Space resolution stays on the critical path (the response reports it), but
+ * thread assignment is deferred — it costs two more round trips and the client
+ * doesn't display it.
+ */
+export async function placeNote(userId: string, extraction: Extraction): Promise<Placement> {
   const confident = extraction.intentConfidence >= CONFIDENCE_FLOOR;
   const classified = extraction.intent !== 'unclassified';
 
@@ -158,13 +176,23 @@ export async function placeNote(
     };
   }
 
-  // Confident but homeless: still filed, just not in a space yet.
-  if (!spaceId) {
-    return { status: 'filed', spaceId: null, threadId: null };
-  }
+  return { status: 'filed', spaceId, threadId: null };
+}
 
-  const threadId = await resolveThread(userId, spaceId, extraction.title, similarNoteIds);
-  return { status: 'filed', spaceId, threadId };
+/** Runs in the background: picks the thread and attaches the note to it. */
+export async function assignThread(
+  userId: string,
+  noteId: string,
+  spaceId: string | null,
+  title: string,
+  similarNoteIds: string[]
+) {
+  if (!spaceId) return;
+  const threadId = await resolveThread(userId, spaceId, title, similarNoteIds);
+  if (!threadId) return;
+
+  const supabase = await supabaseServer();
+  await supabase.from('notes').update({ thread_id: threadId }).eq('id', noteId).eq('user_id', userId);
 }
 
 /** Records a manual reclassification so the extractor learns from it. */
@@ -186,4 +214,5 @@ export async function recordCorrection(
     note_excerpt: excerpt.slice(0, 300),
   });
   if (error) console.error('[classify] recordCorrection:', error.message);
+  else invalidateCorrections(userId);
 }

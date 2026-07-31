@@ -74,7 +74,11 @@ export async function hybridSearch(
     .map(([noteId, v]) => ({ noteId, score: v.score, via: [...v.via] }))
     .sort((a, b) => b.score - a.score);
 
-  if (!opts.rerank || ranked.length <= want) return ranked.slice(0, want);
+  // Reranking costs a whole model call (~1.5s). It only earns that when there
+  // are meaningfully more candidates than we need — otherwise we'd be asking a
+  // model to reorder a list we're going to return in full anyway.
+  const worthReranking = opts.rerank && ranked.length >= want * 2 && ranked.length > 6;
+  if (!worthReranking) return ranked.slice(0, want);
   return rerank(userId, query, ranked, want);
 }
 
