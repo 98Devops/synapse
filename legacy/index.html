@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice → Vector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #fafaf7;
+      --surface: #ffffff;
+      --ink: #0a0a0a;
+      --ink-mid: #4a4a48;
+      --ink-soft: #8a8a86;
+      --line: #e6e6e0;
+      --accent: #0035ff;
+      --accent-soft: #eef1ff;
+      --danger: #d1382b;
+      --success: #0f7a3a;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.5;
+    }
+    .container { max-width: 720px; margin: 0 auto; padding: 48px 32px 96px; }
+    header { border-bottom: 1px solid var(--line); padding-bottom: 32px; margin-bottom: 48px; }
+    .brand {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; font-weight: 500;
+      color: var(--ink-soft);
+      letter-spacing: 0.08em; text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    h1 { font-size: 36px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 8px; }
+    h1 .arrow { color: var(--accent); font-weight: 400; margin: 0 4px; }
+    .tagline { color: var(--ink-mid); font-size: 15px; max-width: 520px; }
+    section { margin-bottom: 48px; }
+    .section-label {
+      display: flex; align-items: center; gap: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; font-weight: 500;
+      color: var(--ink-soft);
+      letter-spacing: 0.08em; text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+    .section-label::before {
+      content: counter(step, decimal-leading-zero);
+      counter-increment: step;
+      color: var(--accent);
+    }
+    body { counter-reset: step; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 24px;
+    }
+    button {
+      font-family: inherit; font-size: 14px; font-weight: 500;
+      padding: 10px 20px;
+      background: var(--ink); color: white;
+      border: 1px solid var(--ink); border-radius: 8px;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.recording { background: var(--danger); border-color: var(--danger); }
+    .rec-row { display: flex; align-items: center; gap: 16px; }
+    .live-indicator {
+      display: none; align-items: center; gap: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--danger);
+      letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    .live-indicator.active { display: flex; }
+    .live-indicator .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.8); }
+    }
+    .transcript {
+      margin-top: 20px; padding: 16px 20px;
+      background: var(--bg);
+      border: 1px solid var(--line); border-radius: 8px;
+      min-height: 60px;
+      font-size: 15px; line-height: 1.6;
+      display: none;
+    }
+    .transcript.visible { display: block; }
+    .transcript-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; color: var(--ink-soft);
+      text-transform: uppercase; letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+    .transcript-text .final { color: var(--ink); }
+    .transcript-text .interim { color: var(--ink-soft); font-style: italic; }
+    .status {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; color: var(--ink-soft);
+      margin-top: 16px; min-height: 18px;
+    }
+    .status.error { color: var(--danger); }
+    .status.success { color: var(--success); }
+    input[type="text"] {
+      font-family: inherit; font-size: 15px;
+      padding: 12px 16px; width: 100%;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      border-radius: 8px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="text"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .search-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .search-row input { flex: 1; }
+    .results { margin-top: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .result {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      padding: 16px 20px;
+    }
+    .result-meta {
+      display: flex; justify-content: space-between; align-items: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--ink-soft);
+      margin-bottom: 8px;
+    }
+    .result-score { color: var(--accent); font-weight: 500; }
+    .result-text { font-size: 15px; color: var(--ink); }
+    .browser-warn {
+      display: none;
+      background: #fff8e1; border: 1px solid #f0d97b;
+      border-radius: 8px; padding: 12px 16px;
+      font-size: 13px; color: #5a4400;
+      margin-bottom: 24px;
+    }
+    .browser-warn.visible { display: block; }
+    footer {
+      margin-top: 64px; padding-top: 24px;
+      border-top: 1px solid var(--line);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--ink-soft);
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+    }
+    footer .stack { color: var(--ink-mid); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">98Devops · Prototype</div>
+      <h1>Voice <span class="arrow">→</span> Vector</h1>
+      <p class="tagline">Speak a note. It gets transcribed by your browser, embedded via Gemini, and stored in Qdrant for semantic search.</p>
+    </header>
+
+    <div class="browser-warn" id="browserWarn">
+      This demo uses the Web Speech API for transcription — best in Chrome or Edge. Firefox and Safari have limited support.
+    </div>
+
+    <section>
+      <div class="section-label">Capture</div>
+      <div class="card">
+        <div class="rec-row">
+          <button id="recordBtn">Start speaking</button>
+          <div class="live-indicator" id="liveIndicator">
+            <div class="dot"></div>
+            <span>Listening</span>
+          </div>
+        </div>
+        <div class="transcript" id="transcriptBox">
+          <div class="transcript-label">Transcript</div>
+          <div class="transcript-text" id="transcriptText"></div>
+        </div>
+        <div class="status" id="recordStatus">Ready.</div>
+        <div class="search-row" style="margin-top:16px">
+          <input type="text" id="manualInput" placeholder="…or type a note and press Enter (mic fallback)">
+          <button id="manualBtn">Store</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-label">Search</div>
+      <div class="card">
+        <div class="search-row">
+          <input type="text" id="searchInput" placeholder="Search by meaning — not just keywords">
+          <button id="searchBtn">Search</button>
+        </div>
+        <div class="status" id="searchStatus"></div>
+        <div class="results" id="results"></div>
+      </div>
+    </section>
+
+    <footer>
+      <div class="stack">Web Speech API · Gemini text-embedding-004 · Qdrant · Netlify</div>
+      <div>v0.2</div>
+    </footer>
+  </div>
+
+  <script>
+    const recordBtn = document.getElementById('recordBtn');
+    const recordStatus = document.getElementById('recordStatus');
+    const liveIndicator = document.getElementById('liveIndicator');
+    const transcriptBox = document.getElementById('transcriptBox');
+    const transcriptText = document.getElementById('transcriptText');
+    const searchInput = document.getElementById('searchInput');
+    const searchBtn = document.getElementById('searchBtn');
+    const searchStatus = document.getElementById('searchStatus');
+    const resultsEl = document.getElementById('results');
+    const browserWarn = document.getElementById('browserWarn');
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      browserWarn.classList.add('visible');
+      recordBtn.disabled = true;
+      recordStatus.textContent = 'Web Speech API not supported in this browser.';
+    }
+
+    let recognition = null;
+    let finalTranscript = '';
+    let isRecording = false;
+    let lastError = null;
+
+    const ERROR_HELP = {
+      'not-allowed': 'Microphone blocked. Click the icon at the left of the address bar → allow Microphone, then reload.',
+      'service-not-allowed': 'Speech service blocked by the browser or an extension/policy. Try a normal (non-incognito) Chrome window.',
+      'audio-capture': 'No microphone found. Check Windows Settings → Sound → Input, and that no other app is holding the mic.',
+      'network': 'Chrome could not reach Google’s speech service (this API sends audio to Google). Check network/VPN/firewall.',
+      'no-speech': 'No speech detected. Speak a little louder, closer to the mic, and start talking right after clicking.',
+      'aborted': 'Recognition was aborted before any speech was captured.'
+    };
+
+    function setStatus(el, text, tone = '') {
+      el.textContent = text;
+      el.className = 'status' + (tone ? ' ' + tone : '');
+    }
+
+    function renderTranscript(interim) {
+      transcriptText.innerHTML =
+        `<span class="final">${finalTranscript}</span>` +
+        `<span class="interim"> ${interim}</span>`;
+    }
+
+    function startRecording() {
+      lastError = null;
+      finalTranscript = '';
+      transcriptText.innerHTML = '';
+      transcriptBox.classList.add('visible');
+
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event) => {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const chunk = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += chunk + ' ';
+          } else {
+            interim += chunk;
+          }
+        }
+        renderTranscript(interim);
+      };
+
+      recognition.onerror = (event) => {
+        lastError = event.error;
+        console.error('[speech] error:', event.error, event);
+        const help = ERROR_HELP[event.error] || '';
+        setStatus(recordStatus, `Recognition error: ${event.error}${help ? ' — ' + help : ''}`, 'error');
+        stopRecording();
+      };
+
+      recognition.onend = async () => {
+        liveIndicator.classList.remove('active');
+        recordBtn.textContent = 'Start speaking';
+        recordBtn.classList.remove('recording');
+        isRecording = false;
+
+        // Don't clobber the message onerror already set — that one is the real cause.
+        if (lastError) return;
+
+        const text = finalTranscript.trim();
+        if (!text) {
+          setStatus(recordStatus, 'Nothing captured — no speech reached the recognizer. Try again.', 'error');
+          return;
+        }
+        await storeNote(text);
+      };
+
+      recognition.start();
+      isRecording = true;
+      recordBtn.textContent = 'Stop';
+      recordBtn.classList.add('recording');
+      liveIndicator.classList.add('active');
+      setStatus(recordStatus, 'Speak now...');
+    }
+
+    function stopRecording() {
+      if (recognition && isRecording) {
+        recognition.stop();
+      }
+    }
+
+    async function storeNote(text) {
+      try {
+        setStatus(recordStatus, 'Embedding and storing in Qdrant...');
+        const res = await fetch('/.netlify/functions/store', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Store failed: ${res.status}`);
+        }
+        const { id } = await res.json();
+        setStatus(recordStatus, `Stored (${id.slice(0, 8)}). Ready for another.`, 'success');
+      } catch (err) {
+        setStatus(recordStatus, err.message, 'error');
+      }
+    }
+
+    async function runSearch() {
+      const query = searchInput.value.trim();
+      if (!query) return;
+      resultsEl.innerHTML = '';
+      setStatus(searchStatus, 'Embedding query and searching Qdrant...');
+
+      try {
+        const res = await fetch('/.netlify/functions/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Search failed: ${res.status}`);
+        }
+        const { results } = await res.json();
+
+        if (!results.length) {
+          setStatus(searchStatus, 'No matches yet — record some notes first.', '');
+          return;
+        }
+
+        setStatus(searchStatus, `${results.length} match${results.length > 1 ? 'es' : ''}.`, 'success');
+        results.forEach(r => {
+          const el = document.createElement('div');
+          el.className = 'result';
+          const time = r.timestamp ? new Date(r.timestamp).toLocaleString() : '';
+          el.innerHTML = `
+            <div class="result-meta">
+              <span>${time}</span>
+              <span class="result-score">${(r.score * 100).toFixed(1)}% match</span>
+            </div>
+            <div class="result-text"></div>
+          `;
+          el.querySelector('.result-text').textContent = r.text;
+          resultsEl.appendChild(el);
+        });
+      } catch (err) {
+        setStatus(searchStatus, err.message, 'error');
+      }
+    }
+
+    recordBtn.addEventListener('click', () => {
+      if (isRecording) stopRecording();
+      else startRecording();
+    });
+    const manualInput = document.getElementById('manualInput');
+    const manualBtn = document.getElementById('manualBtn');
+    async function storeManual() {
+      const text = manualInput.value.trim();
+      if (!text) return;
+      await storeNote(text);
+      manualInput.value = '';
+    }
+    manualBtn.addEventListener('click', storeManual);
+    manualInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') storeManual();
+    });
+
+    searchBtn.addEventListener('click', runSearch);
+    searchInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') runSearch();
+    });
+  </script>
+</body>
+</html>
