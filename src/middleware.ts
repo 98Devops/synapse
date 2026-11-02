@@ -54,7 +54,8 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Everything except static assets and the auth callback.
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+    // Everything except static assets and the PWA files, which the browser
+    // fetches without credentials and must never be redirected to /login.
+    '/((?!_next/static|_next/image|favicon.ico|sw\\.js|manifest\\.webmanifest|pwa-icon/|icon|apple-icon|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
   ],
 };

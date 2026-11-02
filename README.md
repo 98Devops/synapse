@@ -17,6 +17,13 @@ knowledge graph you can question — and that answers you out loud.
   speak the answer back. Hands-free conversation mode closes the loop.
 - **Notice** — automatic theme clustering, strongest hubs, orphaned notes, an activity
   pulse and an action tracker.
+- **Evolve** — a pattern engine reads across everything you've said and trained and
+  tells you what's rising, what's fading, the loops you keep circling and where parts
+  of your life connect. Rate each highlight; it learns what you find useful.
+- **Train** — the Size Blueprint training log: sets, loads, last-time targets, weekly
+  check-ins and measurements, with voice logging. See `docs/specs/size-blueprint-log.md`.
+- **Pocket** — installs as a PWA on your phone, opens instantly from cache, works
+  offline for reading.
 
 ## Stack
 
@@ -57,8 +64,26 @@ none require a credit card.
 
 ### Database
 
-Paste `supabase/schema.sql` into the Supabase SQL editor and run it. It creates the
-tables, row level security policies, and the private `recordings` storage bucket.
+In the Supabase SQL editor, run in order: `supabase/schema.sql`,
+`supabase/migration-002-classification.sql`, `supabase/migration-003-training-and-highlights.sql`.
+All are safe to re-run.
+
+### Vector index
+
+Qdrant is derived from Postgres. If the cluster is new or wiped, point `QDRANT_URL` /
+`QDRANT_API_KEY` at it and run:
+
+```bash
+node scripts/reindex.mjs
+```
+
+Free Qdrant clusters are deleted after a period of inactivity; the scheduled Netlify
+function `netlify/functions/keepalive.mts` pings Qdrant and Supabase daily to prevent it.
+
+### On your phone
+
+Open the deployed site in Chrome (Android) and choose **Install app**, or in Safari (iOS)
+**Share → Add to Home Screen**. The service worker only registers in production builds.
 
 ## Notes on the design
 
@@ -82,7 +107,15 @@ src/
     gemini.ts    embeddings, extraction, streaming
     qdrant.ts    vector index
     graph.ts     graph construction and one-hop expansion
+  features/
+    training/    Size Blueprint training module (program, rules, UI)
 supabase/
   schema.sql     tables, RLS, storage bucket
+  migration-*    incremental migrations, run in order
+scripts/
+  reindex.mjs    rebuild Qdrant from Postgres
+docs/
+  specs/         feature specs
+  sprints/       what each sprint shipped and why
 legacy/          the original single-file prototype
 ```

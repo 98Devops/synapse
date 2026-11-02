@@ -13,6 +13,8 @@ import Dashboard from '@/components/Dashboard';
 import LensBar, { DEFAULT_LENS, type Lens } from '@/components/LensBar';
 import { computeInsights } from '@/lib/insights';
 import { useTheme } from '@/lib/useTheme';
+import Link from 'next/link';
+import { canInstall, promptInstall } from '@/components/PwaRegister';
 import type { Cluster } from '@/lib/cluster';
 import type { GraphData, Note, Space } from '@/lib/types';
 
@@ -22,7 +24,43 @@ const EMPTY: GraphData = {
   stats: { notes: 0, entities: 0, connections: 0, density: 0 },
 };
 
-type MobileTab = 'graph' | 'capture' | 'agent' | 'pulse';
+/** Last-known state, so the app paints instantly on open (and offline). Cleared on sign-out. */
+const CACHE_KEY = 'synapse:cache:v1';
+
+interface CachedBrain {
+  graph?: GraphData;
+  notes?: Note[];
+  spaces?: Space[];
+  clusters?: Cluster[];
+}
+
+function readCache(): CachedBrain | null {
+  try {
+    return JSON.parse(localStorage.getItem(CACHE_KEY) ?? 'null');
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(patch: CachedBrain) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ ...readCache(), ...patch }));
+  } catch {
+    // quota or private mode — the cache is an optimisation, never a requirement
+  }
+}
+
+function clearLocalData() {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      // Theme ('synapse-theme') is a device preference and survives sign-out.
+      if (key.startsWith('synapse:') || key.startsWith('synapse-training:')) localStorage.removeItem(key);
+    }
+  } catch {}
+}
+
+/** 'home' = no sheet open; the header switch decides graph vs dashboard. */
+type MobileTab = 'home' | 'capture' | 'agent' | 'pulse';
 type View = 'graph' | 'dashboard';
 
 export default function Home() {
@@ -35,12 +73,13 @@ export default function Home() {
   const [lens, setLens] = useState<Lens>(DEFAULT_LENS);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [mobileTab, setMobileTab] = useState<MobileTab>('graph');
+  const [mobileTab, setMobileTab] = useState<MobileTab>('home');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [view, setView] = useState<View>('graph');
+  const [installable, setInstallable] = useState(false);
   const graphControls = useRef<GraphControls | null>(null);
   const { isDark, toggle } = useTheme();
 
@@ -49,6 +88,17 @@ export default function Home() {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => d?.user?.email && setEmail(d.user.email))
       .catch(() => {});
+
+    // Phones open on the dashboard (the graph is a big-screen view), and the
+    // PWA shortcuts can deep-link straight into a sheet.
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    if (tab === 'capture' || tab === 'agent' || tab === 'pulse') setMobileTab(tab);
+    if (window.matchMedia('(max-width: 1023px)').matches) setView('dashboard');
+
+    const onInstallable = () => setInstallable(canInstall());
+    onInstallable();
+    window.addEventListener('synapse:installable', onInstallable);
+    return () => window.removeEventListener('synapse:installable', onInstallable);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -64,6 +114,7 @@ export default function Home() {
       setNotes(n.notes ?? []);
       setSpaces(s.spaces ?? []);
       setError(null);
+      writeCache({ graph: g, notes: n.notes ?? [], spaces: s.spaces ?? [] });
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -71,11 +122,24 @@ export default function Home() {
     }
     fetch('/api/clusters')
       .then((r) => r.json())
-      .then((c) => !c.error && setClusters(c.clusters ?? []))
+      .then((c) => {
+        if (c.error) return;
+        setClusters(c.clusters ?? []);
+        writeCache({ clusters: c.clusters ?? [] });
+      })
       .catch(() => {});
   }, []);
 
   useEffect(() => {
+    // Paint the last known brain immediately, then reconcile with the server.
+    const cached = readCache();
+    if (cached?.notes) {
+      setGraph(cached.graph ?? EMPTY);
+      setNotes(cached.notes);
+      setSpaces(cached.spaces ?? []);
+      setClusters(cached.clusters ?? []);
+      setLoading(false);
+    }
     refresh();
   }, [refresh]);
 
@@ -170,13 +234,15 @@ export default function Home() {
 
   const selectFromPanel = useCallback((id: string) => {
     setSelectedId(id);
-    setMobileTab('graph');
+    setMobileTab('home');
+    setView('graph');
   }, []);
 
   const focusCluster = useCallback((c: Cluster) => {
     setHighlight(new Set(c.nodeIds));
     setSelectedId(c.noteIds[0] ?? null);
-    setMobileTab('graph');
+    setMobileTab('home');
+    setView('graph');
   }, []);
 
   const exportBrain = useCallback((format: 'json' | 'md') => {
@@ -246,6 +312,7 @@ export default function Home() {
           isDark={isDark}
           onViewChange={setZoom}
           controlsRef={graphControls}
+          paused={view === 'dashboard'}
         />
       </div>
 
@@ -326,6 +393,12 @@ export default function Home() {
               </button>
             ))}
           </div>
+          <Link
+            href="/training"
+            className="hidden rounded-md px-2 py-1 text-[11px] text-muted transition hover:text-ink lg:block"
+          >
+            Training
+          </Link>
           <Divider />
           <Stat value={graph.stats.notes} label="notes" className="text-accent" />
           <Divider className="hidden sm:block" />
@@ -353,9 +426,17 @@ export default function Home() {
             onClick={() => setPaletteOpen(true)}
             className="mono hidden rounded-lg border border-line px-2 py-1.5 text-[10px] text-muted transition hover:border-accent hover:text-ink sm:block"
           >
-            âŒ˜K
+            ⌘K
           </button>
-          <form action="/auth/signout" method="post" className="flex">
+          {installable && (
+            <button
+              onClick={() => promptInstall()}
+              className="rounded-lg bg-accent-soft px-2 py-1 text-[10px] font-medium text-accent transition hover:text-ink"
+            >
+              Install
+            </button>
+          )}
+          <form action="/auth/signout" method="post" className="flex" onSubmit={clearLocalData}>
             <button
               type="submit"
               title={email ? `Signed in as ${email} — sign out` : 'Sign out'}
@@ -423,7 +504,7 @@ export default function Home() {
 
       {/* ---------------- mobile sheet ---------------- */}
       <AnimatePresence>
-        {mobileTab !== 'graph' && (
+        {mobileTab !== 'home' && (
           <motion.div
             key={mobileTab}
             initial={{ y: '100%' }}
@@ -461,32 +542,55 @@ export default function Home() {
 
       {/* ---------------- mobile tab bar ---------------- */}
       <nav className="safe-bottom panel absolute inset-x-0 bottom-0 z-40 flex items-stretch lg:hidden">
-        {(
-          [
-            ['graph', 'Graph'],
-            ['capture', 'Capture'],
-            ['agent', 'Ask'],
-            ['pulse', 'Pulse'],
-          ] as Array<[MobileTab, string]>
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setMobileTab(key)}
-            className={`relative flex-1 py-3.5 text-[11px] font-medium transition ${
-              mobileTab === key ? 'text-accent' : 'text-muted'
-            }`}
-          >
-            {mobileTab === key && (
-              <motion.span layoutId="mobile-tab" className="absolute inset-x-4 top-0 h-[2px] rounded-full bg-accent" />
-            )}
-            {label}
-            {key === 'pulse' && insight.openActions.length > 0 && (
-              <span className="ml-1 rounded-full bg-amber/20 px-1 text-[9px] text-amber">
-                {insight.openActions.length}
+        {MOBILE_TABS.map(({ key, label, icon }) =>
+          key === 'capture' ? (
+            <button
+              key={key}
+              onClick={() => setMobileTab(mobileTab === 'capture' ? 'home' : 'capture')}
+              className="relative flex flex-1 items-center justify-center"
+              aria-label="Capture a thought"
+            >
+              <span
+                className={`-mt-5 flex h-12 w-12 items-center justify-center rounded-full shadow-lg transition ${
+                  mobileTab === 'capture' ? 'bg-rose text-white' : 'glow bg-accent text-white'
+                }`}
+              >
+                <TabIcon d={icon} size={20} />
               </span>
-            )}
-          </button>
-        ))}
+            </button>
+          ) : (
+            <button
+              key={key}
+              onClick={() => {
+                setMobileTab(key);
+                if (key === 'home') setView('dashboard');
+              }}
+              className={`relative flex flex-1 flex-col items-center gap-0.5 pb-2.5 pt-2 text-[10px] font-medium transition ${
+                mobileTab === key ? 'text-accent' : 'text-muted'
+              }`}
+            >
+              {mobileTab === key && (
+                <motion.span layoutId="mobile-tab" className="absolute inset-x-5 top-0 h-[2px] rounded-full bg-accent" />
+              )}
+              <span className="relative">
+                <TabIcon d={icon} />
+                {key === 'pulse' && insight.openActions.length > 0 && (
+                  <span className="absolute -right-2.5 -top-1 rounded-full bg-amber px-1 text-[8px] leading-[13px] text-bg">
+                    {insight.openActions.length}
+                  </span>
+                )}
+              </span>
+              {label}
+            </button>
+          )
+        )}
+        <Link
+          href="/training"
+          className="relative flex flex-1 flex-col items-center gap-0.5 pb-2.5 pt-2 text-[10px] font-medium text-muted transition active:text-accent"
+        >
+          <TabIcon d={TRAIN_ICON} />
+          Train
+        </Link>
       </nav>
 
       {/* ---------------- detail drawer ---------------- */}
@@ -511,7 +615,7 @@ export default function Home() {
 
       {/* ---------------- states ---------------- */}
       <AnimatePresence>
-        {!loading && !error && graph.stats.notes === 0 && mobileTab === 'graph' && (
+        {!loading && !error && graph.stats.notes === 0 && mobileTab === 'home' && view === 'graph' && (
           <motion.div
             initial={{ opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -561,6 +665,22 @@ export default function Home() {
   );
 }
 
+const MOBILE_TABS: Array<{ key: MobileTab; label: string; icon: string }> = [
+  { key: 'home', label: 'Home', icon: 'M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z' },
+  { key: 'agent', label: 'Ask', icon: 'M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z' },
+  { key: 'capture', label: 'Capture', icon: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM5 11a7 7 0 0 0 14 0M12 18v3' },
+  { key: 'pulse', label: 'Pulse', icon: 'M3 12h4l3-8 4 16 3-8h4' },
+];
+const TRAIN_ICON = 'M6.5 6.5v11M17.5 6.5v11M3 9v6M21 9v6M6.5 12h11';
+
+function TabIcon({ d, size = 18 }: { d: string; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d={d} />
+    </svg>
+  );
+}
+
 function Stat({ value, label, className }: { value: number; label: string; className: string }) {
   return (
     <div className="text-center">
@@ -582,7 +702,7 @@ function Divider({ className = '' }: { className?: string }) {
 }
 
 const SHORTCUTS: Array<[string, string]> = [
-  ['âŒ˜K / Ctrl+K', 'Command palette — jump anywhere'],
+  ['⌘K / Ctrl+K', 'Command palette — jump anywhere'],
   ['R', 'Start / stop recording'],
   ['H / G', 'Home dashboard / Graph'],
   ['F', 'Fit the whole graph to view'],

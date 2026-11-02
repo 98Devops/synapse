@@ -71,6 +71,8 @@ interface Props {
   /** Lets the parent render zoom controls without owning the camera. */
   onViewChange?: (zoom: number) => void;
   controlsRef?: React.MutableRefObject<GraphControls | null>;
+  /** Hidden behind another view: skip drawing so a phone isn't rendering 60fps for nothing. */
+  paused?: boolean;
 }
 
 /** Imperative camera handle exposed to the toolbar. */
@@ -93,8 +95,11 @@ export default function GraphCanvas({
   isDark,
   onViewChange,
   controlsRef,
+  paused = false,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
@@ -229,6 +234,7 @@ export default function GraphCanvas({
 
     const draw = () => {
       raf = requestAnimationFrame(draw);
+      if (pausedRef.current) return;
       timeRef.current += 1 / 60;
       const t = timeRef.current;
 

@@ -7,6 +7,8 @@ import { recordCorrection } from '@/lib/classify';
 import { supabaseServer } from '@/lib/supabase/server';
 import { scrollNotes } from '@/lib/qdrant';
 import { INTENTS, type Note } from '@/lib/types';
+import { getCurrentRun, loadLog, loadProgram } from '@/features/training/db';
+import { currentWeek, summarizeRun } from '@/features/training/rules';
 
 /**
  * Tool results are what the agent reasons over, so they are formatted as
@@ -382,8 +384,25 @@ export function buildTools(trace: ToolTrace, userId: string) {
     }
   );
 
+  const trainingLogTool = tool(
+    async () => {
+      const supabase = await supabaseServer();
+      const [program, run] = await Promise.all([loadProgram(supabase), getCurrentRun(supabase, userId)]);
+      if (!run) return 'No training program started yet.';
+      const log = await loadLog(supabase, run.id);
+      return summarizeRun(log, program, run.startDate, currentWeek(run.startDate, new Date(), program.weeks));
+    },
+    {
+      name: 'training_log',
+      description:
+        "The user's workout log for their current training program: sessions done per week, every logged set with reps, load and date per exercise, load changes, and weekly bodyweight/sleep/food check-ins. Use for training questions such as 'when did I last add load to rows?', 'how many push-ups did I do last week?', 'am I gaining weight?'.",
+      schema: z.object({}),
+    }
+  );
+
   return [
     searchNotesTool,
+    trainingLogTool,
     relatedNotesTool,
     entityNotesTool,
     graphOverviewTool,

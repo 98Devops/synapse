@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { motion } from 'framer-motion';
+import EvolutionPanel from './EvolutionPanel';
 import type { Insight } from '@/lib/insights';
 import type { Note, Space } from '@/lib/types';
 import type { GraphData } from '@/lib/types';
@@ -58,8 +59,13 @@ export default function Dashboard({
 
   return (
     // Left padding clears the capture/agent rail, which stays available here.
-    <div className="h-full overflow-y-auto px-5 pb-24 pt-[136px] lg:pb-8 lg:pl-[358px]">
+    <div className="h-full overflow-y-auto px-3 pb-24 pt-[84px] sm:px-5 sm:pt-[100px] lg:pb-8 lg:pl-[358px] lg:pt-[136px]">
       <div className="mx-auto grid max-w-[1100px] gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {/* ---- the point of it all: what's changing in you ---- */}
+        <div className="md:col-span-2 xl:col-span-3">
+          <EvolutionPanel notes={notes} onSelect={onSelect} />
+        </div>
+
         {/* ---- headline numbers ---- */}
         <Card className="md:col-span-2 xl:col-span-3">
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
